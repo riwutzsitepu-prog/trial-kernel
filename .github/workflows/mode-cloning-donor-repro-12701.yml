@@ -333,7 +333,20 @@ jobs:
           test "$(git hash-object .config)" = "$EXPECTED_DEFCONFIG_BLOB"
           cp .config "$GITHUB_WORKSPACE/DONOR-REPRO.base.config"
 
-          grep -q '^CONFIG_LOCALVERSION="-perf"
+          grep -q '^CONFIG_LOCALVERSION="-perf"$' .config
+          grep -q '^CONFIG_LOCALVERSION_AUTO=y$' .config
+          grep -q '^# CONFIG_KPROBES is not set$' .config
+          grep -q '^CONFIG_OVERLAY_FS=y$' .config
+          ! grep -q '^CONFIG_KSU' .config
+          ! grep -q '^CONFIG_LITTLE_CPU_MASK' .config
+          ! grep -q '^CONFIG_BIG_CPU_MASK' .config
+
+          export PATH="$GITHUB_WORKSPACE/proton-clang/bin:$PATH"
+          make ARCH=arm64 olddefconfig
+
+          grep -q '^# CONFIG_CPUSET_ASSIST is not set$' .config
+          cp .config "$GITHUB_WORKSPACE/DONOR-REPRO.config"
+
       - name: Build donor reproduction Image.gz
         run: |
           set -o pipefail

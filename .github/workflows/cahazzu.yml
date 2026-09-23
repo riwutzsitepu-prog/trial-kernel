@@ -83,6 +83,7 @@ jobs:
           for x in "$TCROOT"/bin/aarch64-linux-gnu-* "$TCROOT"/bin/arm-linux-gnueabi-*; do
             [ ! -e "$x" ] || ln -sf "$GITHUB_WORKSPACE/$x" "$GITHUB_WORKSPACE/toolwrap/$(basename "$x")"
           done
+          ln -sf /usr/bin/python3 "$GITHUB_WORKSPACE/toolwrap/python2"
           echo "PATH=$GITHUB_WORKSPACE/toolwrap:$PATH" >> "$GITHUB_ENV"
           "$CLANG" --version | head -n3 | tee "compiler-${{ matrix.android }}.txt"
           test -x "$TCROOT/bin/ld.lld"

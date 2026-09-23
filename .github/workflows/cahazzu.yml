@@ -158,6 +158,28 @@ jobs:
           grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
           cp out/.config "$GITHUB_WORKSPACE/CahAzzu-${{ matrix.android }}.config"
 
+      - name: Materialize KernelSU compatibility patches
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          make -j1 O=out \
+            ARCH=arm64 \
+            CC="$TOOLBIN/clang" HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ \
+            LD="$TOOLBIN/ld.lld" AR="$TOOLBIN/llvm-ar" NM="$TOOLBIN/llvm-nm" \
+            OBJCOPY="$TOOLBIN/llvm-objcopy" OBJDUMP="$TOOLBIN/llvm-objdump" STRIP="$TOOLBIN/llvm-strip" \
+            CLANG_TRIPLE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="$TOOLBIN/arm-linux-gnueabi-" \
+            drivers/kernelsu/built-in.o
+
+          grep -q '^int path_umount(struct path \*path, int flags)' fs/namespace.c
+          grep -q '^int path_umount(struct path \*path, int flags);' fs/internal.h
+          rm -f out/fs/namespace.o out/fs/built-in.o
+
       - name: Build kernel
         shell: bash
         run: |

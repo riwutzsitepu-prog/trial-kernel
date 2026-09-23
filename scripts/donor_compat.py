@@ -1,27 +1,21 @@
 from pathlib import Path
 
+import re
+
 p = Path("kernel/kernel/cgroup/cpuset.c")
 s = p.read_text()
-old = """static ssize_t cpuset_write_resmask_assist(struct kernfs_open_file *of,
-                                           struct cs_target tgt, size_t nbytes,
-                                           loff_t off)
-{
-        pr_info("cpuset_assist: setting %s to %s\\n", tgt.name, tgt.cpus);
-        return cpuset_write_resmask(of, tgt.cpus, nbytes, off);
-}"""
-new = """#ifdef CONFIG_CPUSET_ASSIST
-static ssize_t cpuset_write_resmask_assist(struct kernfs_open_file *of,
-                                           struct cs_target tgt, size_t nbytes,
-                                           loff_t off)
-{
-        pr_info("cpuset_assist: setting %s to %s\\n", tgt.name, tgt.cpus);
-        return cpuset_write_resmask(of, tgt.cpus, nbytes, off);
-}
-#endif"""
 if "#ifdef CONFIG_CPUSET_ASSIST\nstatic ssize_t cpuset_write_resmask_assist" not in s:
-    if old not in s:
-        raise SystemExit("cpuset assist anchor not found")
-    p.write_text(s.replace(old, new, 1))
+    pattern = re.compile(
+        r"(static ssize_t cpuset_write_resmask_assist\(.*?\n\})\n\n"
+        r"(?=static ssize_t cpuset_write_resmask_wrapper)",
+        re.S,
+    )
+    m = pattern.search(s)
+    if not m:
+        raise SystemExit("cpuset assist function not found")
+    wrapped = "#ifdef CONFIG_CPUSET_ASSIST\n" + m.group(1) + "\n#endif\n\n"
+    s = s[:m.start()] + wrapped + s[m.end():]
+    p.write_text(s)
 
 p = Path("kernel/kernel/sched/tune.c")
 s = p.read_text()
@@ -42,7 +36,8 @@ if "#define boost_write_wrapper boost_write" not in s:
     p.write_text(s.replace(marker, repl, 1))
 
 fixed = []
-for hp in Path("kernel").rglob("*.h"):
+source_root = Path("kernel")
+for hp in source_root.rglob("*.h"):
     try:
         hs = hp.read_text()
     except UnicodeDecodeError:
@@ -51,7 +46,8 @@ for hp in Path("kernel").rglob("*.h"):
         continue
     lines = hs.splitlines()
     changed = False
-    replacement = "#define TRACE_INCLUDE_PATH ../../" + hp.parent.as_posix()
+    rel_parent = hp.relative_to(source_root).parent.as_posix()
+    replacement = "#define TRACE_INCLUDE_PATH ../../" + rel_parent
     for i, line in enumerate(lines):
         if line.strip() == "#define TRACE_INCLUDE_PATH .":
             lines[i] = replacement

@@ -105,6 +105,34 @@ jobs:
           ! grep -q '^YYLTYPE yylloc;$' scripts/dtc/dtc-lexer.l
           ! grep -q '^YYLTYPE yylloc;$' scripts/dtc/dtc-lexer.lex.c_shipped
 
+      - name: Fix Android 10 source build blockers
+        if: matrix.android == '10'
+        run: |
+          set -euxo pipefail
+          cd kernel
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel/taskstats.c")
+          s = p.read_text()
+          old = "}\n#elif\nstatic void sysstats_fill_zoneinfo(struct sys_memstats *stats)"
+          new = "}\n#else\nstatic void sysstats_fill_zoneinfo(struct sys_memstats *stats)"
+          if old not in s:
+              raise SystemExit("taskstats #elif blocker not found")
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path("fs/statfs.c")
+          s = p.read_text()
+          pat = "if (sizeof(buf) == sizeof(*st))\n\t\tmemcpy(&buf, st, sizeof(*st));\n\telse {"
+          if s.count(pat) != 2:
+              raise SystemExit(f"unexpected statfs memcpy pattern count: {s.count(pat)}")
+          p.write_text(s.replace(pat, "{"))
+          PY
+
+          grep -q '^#else$' kernel/taskstats.c
+          ! grep -q 'memcpy(&buf, st, sizeof(\*st))' fs/statfs.c
+
       - name: Integrate exact KernelSU Next v1.1.1
         run: |
           set -euxo pipefail

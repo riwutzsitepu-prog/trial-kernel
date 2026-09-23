@@ -359,8 +359,8 @@ jobs:
         run: |
           set -euxo pipefail
           python3 donor_repo/scripts/donor_compat.py
-          grep -B1 -A9 'cpuset_write_resmask_assist' kernel/cgroup/cpuset.c
-          grep -B2 -A6 '#define boost_write_wrapper boost_write' kernel/sched/tune.c
+          grep -B1 -A9 'cpuset_write_resmask_assist' kernel/kernel/cgroup/cpuset.c
+          grep -B2 -A6 '#define boost_write_wrapper boost_write' kernel/kernel/sched/tune.c
 
       - name: Build donor reproduction Image.gz
         run: |

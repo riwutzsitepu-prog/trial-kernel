@@ -163,22 +163,67 @@ jobs:
         run: |
           set -euxo pipefail
           cd kernel
-          export ARCH=arm64
-          export SUBARCH=arm64
+          python3 - <<'PY'
+          from pathlib import Path
 
-          make -j1 O=out \
-            ARCH=arm64 \
-            CC="$TOOLBIN/clang" HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ \
-            LD="$TOOLBIN/ld.lld" AR="$TOOLBIN/llvm-ar" NM="$TOOLBIN/llvm-nm" \
-            OBJCOPY="$TOOLBIN/llvm-objcopy" OBJDUMP="$TOOLBIN/llvm-objdump" STRIP="$TOOLBIN/llvm-strip" \
-            CLANG_TRIPLE="$TOOLBIN/aarch64-linux-gnu-" \
-            CROSS_COMPILE="$TOOLBIN/aarch64-linux-gnu-" \
-            CROSS_COMPILE_ARM32="$TOOLBIN/arm-linux-gnueabi-" \
-            drivers/kernelsu/built-in.o
+          ns = Path("fs/namespace.c")
+          text = ns.read_text()
+          marker = "static bool is_mnt_ns_file(struct dentry *dentry)"
+          patch = r"""
+          static int can_umount(const struct path *path, int flags)
+          {
+              struct mount *mnt = real_mount(path->mnt);
+              if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+                  return -EINVAL;
+              if (!may_mount())
+                  return -EPERM;
+              if (path->dentry != path->mnt->mnt_root)
+                  return -EINVAL;
+              if (!check_mnt(mnt))
+                  return -EINVAL;
+              if (mnt->mnt.mnt_flags & MNT_LOCKED)
+                  return -EINVAL;
+              if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+                  return -EPERM;
+              return 0;
+          }
 
+          int path_umount(struct path *path, int flags)
+          {
+              struct mount *mnt = real_mount(path->mnt);
+              int ret;
+
+              ret = can_umount(path, flags);
+              if (!ret)
+                  ret = do_umount(mnt, flags);
+              dput(path->dentry);
+              mntput_no_expire(mnt);
+              return ret;
+          }
+
+          """
+          if "int path_umount(struct path *path, int flags)" not in text:
+              if marker not in text:
+                  raise SystemExit("namespace insertion marker not found")
+              text = text.replace(marker, patch + marker, 1)
+              ns.write_text(text)
+
+          hdr = Path("fs/internal.h")
+          h = hdr.read_text()
+          proto = "int path_umount(struct path *path, int flags);"
+          if proto not in h:
+              marker_h = "extern void __init mnt_init"
+              pos = h.find(marker_h)
+              if pos < 0:
+                  raise SystemExit("internal.h insertion marker not found")
+              eol = h.find("\n", pos)
+              h = h[:eol+1] + proto + "\n" + h[eol+1:]
+              hdr.write_text(h)
+          PY
+
+          grep -q '^static int can_umount(const struct path \*path, int flags)' fs/namespace.c
           grep -q '^int path_umount(struct path \*path, int flags)' fs/namespace.c
           grep -q '^int path_umount(struct path \*path, int flags);' fs/internal.h
-          rm -f out/fs/namespace.o out/fs/built-in.o
 
       - name: Build kernel
         shell: bash

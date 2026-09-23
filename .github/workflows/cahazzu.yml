@@ -21,9 +21,12 @@ jobs:
       KSU_TAG: v1.1.1
       KSU_COMMIT: 0d6bdc6364cbfc73517dcfdf7ab23b0ba8045553
       HOOKS_URL: https://raw.githubusercontent.com/xiaoleGun/KernelSU_Action/bc7cd1c5abdd5be4481d3dfffc02076858ef9c13/patches/legacy_ksu_hooks.sh
+      GCC64_REPO: https://github.com/mvaisakh/gcc-arm64.git
+      GCC64_COMMIT: 65aa4b61ea0486986770d017c9efa92ea428747a
+      GCC32_REPO: https://github.com/mvaisakh/gcc-arm.git
+      GCC32_COMMIT: c9039c4cde904f926a0344537408fd10b5a4374e
       ANYKERNEL_REPO: https://github.com/stormbreaker-project/AnyKernel3.git
       ANYKERNEL_COMMIT: 3bef00bbe39ba5c97216912c29792c4260e06315
-      TC_URL: https://github.com/greenforce-project/greenforce_clang/releases/download/26122023/greenforce-clang-12.0.1-26122023-1149.tar.zst
       ZIP_NAME: CahAzzu.zip
 
     steps:
@@ -53,22 +56,29 @@ jobs:
           test -f arch/arm64/configs/surya_defconfig
           git rev-parse HEAD | tee "$GITHUB_WORKSPACE/kernel-source-sha.txt"
 
-      - name: Toolchain
+      - name: GCC toolchains
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p tc
-          curl -fL --retry 5 --retry-delay 3 "$TC_URL" -o greenforce.tar.zst
-          tar --zstd -xf greenforce.tar.zst -C tc
-          rm -f greenforce.tar.zst
-          CLANG="$(find tc -path '*/bin/clang' | head -n1)"
-          test -n "$CLANG"
-          TCROOT="$(dirname "$(dirname "$CLANG")")"
-          echo "TCROOT=$TCROOT" >> "$GITHUB_ENV"
-          "$CLANG" --version | tee compiler.txt
-          grep -q 'greenforce clang version 12.0.1' compiler.txt
-          test -x "$TCROOT/bin/aarch64-linux-gnu-as"
-          test -x "$TCROOT/bin/arm-linux-gnueabi-as"
+          git init gcc64
+          cd gcc64
+          git remote add origin "$GCC64_REPO"
+          git fetch --depth=1 origin "$GCC64_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GCC64_COMMIT"
+          cd ..
+          git init gcc32
+          cd gcc32
+          git remote add origin "$GCC32_REPO"
+          git fetch --depth=1 origin "$GCC32_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GCC32_COMMIT"
+          cd ..
+          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          aarch64-elf-gcc --version | head -n3 | tee compiler.txt
+          arm-eabi-gcc --version | head -n3 | tee -a compiler.txt
+          test -x "$GITHUB_WORKSPACE/gcc64/bin/aarch64-elf-ld.lld"
+          test -x "$GITHUB_WORKSPACE/gcc64/bin/llvm-ar"
 
       - name: KernelSU Next
         shell: bash
@@ -107,7 +117,7 @@ jobs:
           printf '%s\n' 'CONFIG_KSU=y' '# CONFIG_KSU_KPROBES_HOOK is not set' 'CONFIG_KSU_LSM_SECURITY_HOOKS=y' '# CONFIG_KSU_DEBUG is not set' 'CONFIG_LOCALVERSION="-CahAzzu"' '# CONFIG_LOCALVERSION_AUTO is not set' '# CONFIG_LOCALVERSION_BRANCH_SHA is not set' >> "$DEFCONFIG"
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
+          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
           make O=out ARCH=arm64 surya_defconfig
           grep -q '^CONFIG_KSU=y$' out/.config
           if grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' out/.config; then exit 1; fi
@@ -125,9 +135,9 @@ jobs:
           export SUBARCH=arm64
           export KBUILD_BUILD_USER=CahAzzu
           export KBUILD_BUILD_HOST=CahAzzu
-          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
-          clang --version | head -n3 | tee "$GITHUB_WORKSPACE/compiler-build.txt"
-          make -j"$(nproc)" O=out ARCH=arm64 CC=clang HOSTCC=clang HOSTCXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- Image.gz dtb.img dtbo.img 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          export PATH="$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+          aarch64-elf-gcc --version | head -n3 | tee "$GITHUB_WORKSPACE/compiler-build.txt"
+          make -j"$(nproc)" O=out ARCH=arm64 CROSS_COMPILE=aarch64-elf- CROSS_COMPILE_ARM32=arm-eabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy LD=aarch64-elf-ld.lld Image.gz dtb.img dtbo.img 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Validate kernel
         shell: bash

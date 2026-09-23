@@ -1,0 +1,111 @@
+name: MODE_CLONING V4 DONOR INSTALLER REPACK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/mode-cloning-v4-donor-installer-repack.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repack:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download V4 kernel ZIP
+        run: |
+          set -euxo pipefail
+          curl -L --fail --retry 3 \
+            -o v4.zip \
+            https://github.com/riwutzsitepu-prog/trial-kernel/releases/download/mode-cloning-surya-a10-ksu12797-manager-v1.1.1/MODE_CLONING-SURYA-A10-KSU12797-MANAGER-v1.1.1.zip
+          unzip -tq v4.zip
+          sha256sum v4.zip | tee V4_ORIGINAL_SHA256.txt
+
+      - name: Repack with exact donor installer behavior
+        run: |
+          set -euxo pipefail
+          rm -rf repack
+          mkdir repack
+          (cd repack && unzip -q ../v4.zip)
+          test -s repack/Image.gz-dtb
+          sha256sum repack/Image.gz-dtb | tee IMAGE_SHA256_BEFORE.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("repack/anykernel.sh")
+          s = p.read_text()
+
+          s = s.replace("do.systemless=1", "do.systemless=0")
+          s = s.replace("BLOCK=/dev/block/bootdevice/by-name/boot;", "BLOCK=boot;")
+          s = s.replace("IS_SLOT_DEVICE=0;", "IS_SLOT_DEVICE=auto;")
+
+          if "do.systemless=0" not in s:
+              raise SystemExit("failed to set do.systemless=0")
+          if "BLOCK=boot;" not in s:
+              raise SystemExit("failed to set BLOCK=boot")
+          if "IS_SLOT_DEVICE=auto;" not in s:
+              raise SystemExit("failed to set IS_SLOT_DEVICE=auto")
+
+          s = s.replace(
+              "kernel.string=4.14.117-MODE_CLONING | KernelSU Next kernel v1.0.9 / Manager v1.1.1",
+              "kernel.string=4.14.117-MODE_CLONING | KSU 12797 | DONOR INSTALLER"
+          )
+          s = s.replace(
+              'ui_print "KernelSU Next kernel v1.0.9 / Manager v1.1.1";',
+              'ui_print "KernelSU Next kernel-side 12797 / Manager v1.1.1";'
+          )
+          p.write_text(s)
+          PY
+
+          grep -q 'do.systemless=0' repack/anykernel.sh
+          grep -q '^BLOCK=boot;' repack/anykernel.sh
+          grep -q '^IS_SLOT_DEVICE=auto;' repack/anykernel.sh
+          ! grep -q 'do.systemless=1' repack/anykernel.sh
+          ! grep -q '^IS_SLOT_DEVICE=0;' repack/anykernel.sh
+
+          sha256sum repack/Image.gz-dtb | tee IMAGE_SHA256_AFTER.txt
+          cmp <(awk '{print $1}' IMAGE_SHA256_BEFORE.txt) <(awk '{print $1}' IMAGE_SHA256_AFTER.txt)
+
+          cat > repack/DONOR-INSTALLER-REPACK.txt <<'EOF'
+          Kernel binary: unchanged from V4 LEGACY12797
+          KernelSU Next kernel-side: 12797
+          Manager target: v1.1.1
+          Installer restored to known-booting donor behavior:
+          do.systemless=0
+          BLOCK=boot
+          IS_SLOT_DEVICE=auto
+          RAMDISK_COMPRESSION=auto
+          PATCH_VBMETA_FLAG=auto
+          DTBO untouched
+          EOF
+
+          (cd repack && zip -r9 ../MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip .)
+          unzip -tq MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip
+          unzip -p MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip Image.gz-dtb > repacked-image.gz-dtb
+          sha256sum repacked-image.gz-dtb | tee IMAGE_SHA256_REPACKED.txt
+          cmp <(awk '{print $1}' IMAGE_SHA256_BEFORE.txt) <(awk '{print $1}' IMAGE_SHA256_REPACKED.txt)
+
+          sha256sum MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip | tee MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip.sha256
+
+      - name: Publish donor-installer repack
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mode-cloning-surya-a10-ksu12797-donor-installer
+          name: MODE_CLONING KSU12797 Donor Installer Repack
+          body: |
+            Same V4 LEGACY12797 kernel binary, unchanged.
+            Only AnyKernel installer behavior is restored to the known-booting donor:
+            do.systemless=0
+            BLOCK=boot
+            IS_SLOT_DEVICE=auto
+            DTBO untouched.
+          files: |
+            MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip
+            MODE_CLONING-SURYA-A10-KSU12797-DONOR-INSTALLER.zip.sha256
+            IMAGE_SHA256_BEFORE.txt
+            IMAGE_SHA256_AFTER.txt
+            IMAGE_SHA256_REPACKED.txt
+            V4_ORIGINAL_SHA256.txt
+          fail_on_unmatched_files: true

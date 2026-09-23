@@ -1,0 +1,321 @@
+name: CahAzzu
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cahazzu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Android ${{ matrix.android }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - android: "10"
+            source_commit: "fa1df47eb127d03f531917f2b47d6c703361d703"
+          - android: "11"
+            source_commit: "99d552248f1facb7c07898f0187732a4eaa4f432"
+
+    env:
+      KERNEL_REPO: https://github.com/mahajant99/kernel_xiaomi_surya.git
+      KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+      KSU_COMMIT: 0d6bdc6364cbfc73517dcfdf7ab23b0ba8045553
+      KSU_TAG: v1.1.1
+      TC_REPO: https://github.com/kdrag0n/proton-clang.git
+      TC_COMMIT: 9fb011b183fe7e69b04b873ef6533b4b077e3c5e
+
+    steps:
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl file flex git \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libelf-dev libssl-dev \
+            make python3 python-is-python3 rsync unzip xz-utils zip zstd
+
+      - name: Clone exact surya source
+        run: |
+          set -euxo pipefail
+          git init kernel
+          cd kernel
+          git remote add origin "$KERNEL_REPO"
+          git fetch --depth=1 origin "${{ matrix.source_commit }}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${{ matrix.source_commit }}"
+          grep -q '^VERSION = 4$' Makefile
+          grep -q '^PATCHLEVEL = 14$' Makefile
+          test -f arch/arm64/configs/surya_defconfig
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/kernel-source-sha.txt"
+
+      - name: Prepare exact Proton Clang 13
+        run: |
+          set -euxo pipefail
+          git init proton-clang
+          cd proton-clang
+          git remote add origin "$TC_REPO"
+          git fetch --depth=1 origin "$TC_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$TC_COMMIT"
+          test -x bin/clang
+          ./bin/clang --version | head -n3 | tee "$GITHUB_WORKSPACE/compiler.txt"
+
+      - name: Integrate exact KernelSU Next v1.1.1
+        run: |
+          set -euxo pipefail
+          cd kernel
+          git clone "$KSU_REPO" KernelSU-Next
+          git -C KernelSU-Next checkout --detach "$KSU_COMMIT"
+          test "$(git -C KernelSU-Next rev-parse HEAD)" = "$KSU_COMMIT"
+          test "$(git -C KernelSU-Next describe --tags --exact-match)" = "$KSU_TAG"
+
+          rm -rf drivers/kernelsu
+          ln -s ../KernelSU-Next/kernel drivers/kernelsu
+
+          grep -qF 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -qF 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          git -C KernelSU-Next rev-parse HEAD | tee "$GITHUB_WORKSPACE/ksunext-source-sha.txt"
+
+      - name: Configure CahAzzu
+        run: |
+          set -euxo pipefail
+          cd kernel
+          export PATH="$GITHUB_WORKSPACE/proton-clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          make ARCH=arm64 surya_defconfig
+
+          scripts/config --file .config --set-str LOCALVERSION "-CahAzzu"
+          scripts/config --file .config --disable LOCALVERSION_AUTO
+          scripts/config --file .config --enable KPROBES
+          scripts/config --file .config --enable KALLSYMS
+          scripts/config --file .config --enable KALLSYMS_ALL
+          scripts/config --file .config --enable OVERLAY_FS
+          scripts/config --file .config --enable KSU
+          scripts/config --file .config --enable KSU_KPROBES_HOOK
+          scripts/config --file .config --enable KSU_LSM_SECURITY_HOOKS
+          scripts/config --file .config --disable KSU_DEBUG
+
+          make ARCH=arm64 olddefconfig
+
+          grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' .config
+          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' .config
+          grep -q '^CONFIG_KPROBES=y$' .config
+          grep -q '^CONFIG_KSU=y$' .config
+          grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' .config
+          grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' .config
+          grep -q '^CONFIG_OVERLAY_FS=y$' .config
+
+          cp .config "$GITHUB_WORKSPACE/CahAzzu-A${{ matrix.android }}.config"
+
+      - name: Build CahAzzu
+        run: |
+          set -o pipefail
+          cd kernel
+          export PATH="$GITHUB_WORKSPACE/proton-clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER=CahAzzu
+          export KBUILD_BUILD_HOST=CahAzzu
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          make -j"$(nproc)" ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image.gz dtbs 2>&1 | tee "$GITHUB_WORKSPACE/build-A${{ matrix.android }}.log"
+
+          test -s arch/arm64/boot/Image.gz
+
+      - name: Assemble DTB and validate
+        run: |
+          set -euxo pipefail
+          cd kernel
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+
+          mapfile -t DTBS < <(find arch/arm64/boot/dts -type f -name '*.dtb' | sort)
+          if [ "${#DTBS[@]}" -eq 0 ]; then
+            echo "No DTB files were built"
+            exit 1
+          fi
+
+          cat "${DTBS[@]}" > "$GITHUB_WORKSPACE/dist/dtb.img"
+          cp arch/arm64/boot/Image.gz "$GITHUB_WORKSPACE/dist/Image.gz"
+          cp .config "$GITHUB_WORKSPACE/dist/config"
+          cp "$GITHUB_WORKSPACE/build-A${{ matrix.android }}.log" "$GITHUB_WORKSPACE/dist/build.log"
+          make -s ARCH=arm64 kernelrelease > "$GITHUB_WORKSPACE/dist/kernelrelease.txt"
+
+          grep -q 'CONFIG_KSU=y' .config
+          grep -q 'CONFIG_KSU_KPROBES_HOOK=y' .config
+          grep -q 'CONFIG_KPROBES=y' .config
+          grep -q 'CONFIG_LOCALVERSION="-CahAzzu"' .config
+
+          file "$GITHUB_WORKSPACE/dist/Image.gz"
+          ls -lh "$GITHUB_WORKSPACE/dist/Image.gz" "$GITHUB_WORKSPACE/dist/dtb.img"
+          cat "$GITHUB_WORKSPACE/dist/kernelrelease.txt"
+
+      - name: Upload A${{ matrix.android }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cahazzu-a${{ matrix.android }}
+          path: dist/
+          if-no-files-found: error
+
+  package:
+    name: Package CahAzzu
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    needs: build
+
+    steps:
+      - name: Download Android 10 build
+        uses: actions/download-artifact@v4
+        with:
+          name: cahazzu-a10
+          path: a10
+
+      - name: Download Android 11 build
+        uses: actions/download-artifact@v4
+        with:
+          name: cahazzu-a11
+          path: a11
+
+      - name: Create universal flashable zip
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          cd AnyKernel3
+          rm -rf .git .github README.md
+
+          cp ../a10/Image.gz Image-A10.gz
+          cp ../a10/dtb.img dtb-A10.img
+          cp ../a11/Image.gz Image-A11.gz
+          cp ../a11/dtb.img dtb-A11.img
+
+          cat > anykernel.sh <<'AK3'
+          # AnyKernel3 Ramdisk Mod Script
+          # CahAzzu
+
+          properties() { '
+          kernel.string=CahAzzu
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=surya
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          detect_sdk() {
+            local sdk p
+            for p in \
+              /system/build.prop \
+              /system/system/build.prop \
+              /system_root/system/build.prop \
+              /vendor/build.prop \
+              /product/build.prop; do
+              if [ -f "$p" ]; then
+                sdk="$(grep -m1 '^ro\.system\.build\.version\.sdk=' "$p" 2>/dev/null | cut -d= -f2)"
+                [ "$sdk" ] || sdk="$(grep -m1 '^ro\.build\.version\.sdk=' "$p" 2>/dev/null | cut -d= -f2)"
+                case "$sdk" in
+                  29|30) echo "$sdk"; return 0 ;;
+                esac
+              fi
+            done
+
+            for p in ro.system.build.version.sdk ro.build.version.sdk ro.vendor.build.version.sdk; do
+              sdk="$(getprop "$p" 2>/dev/null)"
+              case "$sdk" in
+                29|30) echo "$sdk"; return 0 ;;
+              esac
+            done
+            return 1
+          }
+
+          mount /system 2>/dev/null || true
+          mount /vendor 2>/dev/null || true
+
+          SDK="$(detect_sdk)" || abort "CahAzzu: Android 10/11 tidak terdeteksi."
+
+          case "$SDK" in
+            29)
+              ui_print "CahAzzu"
+              cp -f "$AKHOME/Image-A10.gz" "$AKHOME/Image.gz"
+              cp -f "$AKHOME/dtb-A10.img" "$AKHOME/dtb.img"
+              ;;
+            30)
+              ui_print "CahAzzu"
+              cp -f "$AKHOME/Image-A11.gz" "$AKHOME/Image.gz"
+              cp -f "$AKHOME/dtb-A11.img" "$AKHOME/dtb.img"
+              ;;
+            *)
+              abort "CahAzzu hanya untuk Android 10-11."
+              ;;
+          esac
+
+          split_boot;
+          flash_boot;
+          AK3
+
+          chmod 755 anykernel.sh
+          zip -r9 ../CahAzzu.zip . -x '*.git*'
+          cd ..
+          unzip -t CahAzzu.zip
+          sha256sum CahAzzu.zip > CahAzzu.zip.sha256
+
+      - name: Upload CahAzzu
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu
+          path: |
+            CahAzzu.zip
+            CahAzzu.zip.sha256
+          if-no-files-found: error
+
+      - name: Publish CahAzzu
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cahazzu-${{ github.run_number }}
+          name: CahAzzu
+          body: |
+            Poco X3 NFC (surya)
+            Android 10-11
+            KernelSU Next v1.1.1
+          files: |
+            CahAzzu.zip
+            CahAzzu.zip.sha256

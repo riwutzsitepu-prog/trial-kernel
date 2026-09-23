@@ -103,6 +103,7 @@ jobs:
 
           scripts/config --file .config --set-str LOCALVERSION "-CahAzzu"
           scripts/config --file .config --disable LOCALVERSION_AUTO
+
           if [ "${{ matrix.android }}" = "11" ]; then
             scripts/config --file .config --enable MODULES
             scripts/config --file .config --enable MODULE_UNLOAD
@@ -126,8 +127,17 @@ jobs:
 
           grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' .config
           grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' .config
+
           if [ "${{ matrix.android }}" = "11" ]; then
-            grep -q '^CONFIG_MODULES=y
+            grep -q '^CONFIG_MODULES=y$' .config
+          fi
+
+          if [ "${{ matrix.android }}" = "10" ]; then
+            grep -q '^CONFIG_CC_STACKPROTECTOR_REGULAR=y$' .config
+          fi
+
+          grep -q '^CONFIG_KPROBES=y$' .config
+          grep -q '^CONFIG_KSU=y$' .config
           grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' .config
           grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' .config
           grep -q '^CONFIG_OVERLAY_FS=y$' .config

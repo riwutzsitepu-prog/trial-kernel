@@ -1,0 +1,82 @@
+name: Repair donor repro config
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/repair-donor-repro-config.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore valid workflow and patch only Kconfig resolution
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TARGET=.github/workflows/mode-cloning-donor-repro-12701.yml
+          git show 86359728c25c9cf6389bbba64528f1cdf9808fa2:$TARGET > "$TARGET"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/mode-cloning-donor-repro-12701.yml')
+          s=p.read_text()
+          old='''      - name: Configure exact donor defconfig
+        run: |
+          set -euxo pipefail
+          cd kernel
+          cp arch/arm64/configs/Surya-stock_defconfig .config
+          test "$(git hash-object .config)" = "$EXPECTED_DEFCONFIG_BLOB"
+          grep -q '^CONFIG_LOCALVERSION="-perf"$' .config
+          grep -q '^CONFIG_LOCALVERSION_AUTO=y$' .config
+          grep -q '^# CONFIG_KPROBES is not set$' .config
+          grep -q '^CONFIG_OVERLAY_FS=y$' .config
+          ! grep -q '^CONFIG_KSU' .config
+          ! grep -q '^CONFIG_LITTLE_CPU_MASK' .config
+          ! grep -q '^CONFIG_BIG_CPU_MASK' .config
+          cp .config "$GITHUB_WORKSPACE/DONOR-REPRO.config"
+'''
+          new='''      - name: Configure exact donor defconfig
+        run: |
+          set -euxo pipefail
+          cd kernel
+          cp arch/arm64/configs/Surya-stock_defconfig .config
+
+          # Verify donor defconfig before Kconfig expands newly introduced symbols.
+          test "$(git hash-object .config)" = "$EXPECTED_DEFCONFIG_BLOB"
+          cp .config "$GITHUB_WORKSPACE/DONOR-REPRO.base.config"
+          grep -q '^CONFIG_LOCALVERSION="-perf"$' .config
+          grep -q '^CONFIG_LOCALVERSION_AUTO=y$' .config
+          grep -q '^# CONFIG_KPROBES is not set$' .config
+          grep -q '^CONFIG_OVERLAY_FS=y$' .config
+          ! grep -q '^CONFIG_KSU' .config
+          ! grep -q '^CONFIG_LITTLE_CPU_MASK' .config
+          ! grep -q '^CONFIG_BIG_CPU_MASK' .config
+
+          # This donor-era tree has Kconfig symbols absent from its checked-in
+          # defconfig (first prompt was CPUSET_ASSIST). Resolve all NEW symbols
+          # to their defaults non-interactively; do not add KSU or CPU masks.
+          yes '' | make ARCH=arm64 oldconfig
+          grep -q '^# CONFIG_KPROBES is not set$' .config
+          ! grep -q '^CONFIG_KSU' .config
+          ! grep -q '^CONFIG_LITTLE_CPU_MASK' .config
+          ! grep -q '^CONFIG_BIG_CPU_MASK' .config
+          cp .config "$GITHUB_WORKSPACE/DONOR-REPRO.config"
+'''
+          if old not in s:
+              raise SystemExit('expected original configure block not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+          git diff --check
+          git diff -- "$TARGET"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$TARGET"
+          git commit -m 'fix: resolve donor-era Kconfig defaults before compile'
+          git push origin HEAD:main

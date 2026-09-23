@@ -1,6 +1,6 @@
 from pathlib import Path
 
-p = Path("kernel/cgroup/cpuset.c")
+p = Path("kernel/kernel/cgroup/cpuset.c")
 s = p.read_text()
 old = """static ssize_t cpuset_write_resmask_assist(struct kernfs_open_file *of,
                                            struct cs_target tgt, size_t nbytes,
@@ -23,7 +23,7 @@ if "#ifdef CONFIG_CPUSET_ASSIST\nstatic ssize_t cpuset_write_resmask_assist" not
         raise SystemExit("cpuset assist anchor not found")
     p.write_text(s.replace(old, new, 1))
 
-p = Path("kernel/sched/tune.c")
+p = Path("kernel/kernel/sched/tune.c")
 s = p.read_text()
 marker = """#endif
 

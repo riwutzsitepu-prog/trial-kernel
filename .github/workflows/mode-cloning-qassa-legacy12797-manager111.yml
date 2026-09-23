@@ -106,14 +106,13 @@ jobs:
           p = Path("KernelSU-Next/kernel/Makefile")
           s = p.read_text()
 
-          s = s.replace("ccflags-y += -DKSU_UMOUNT\n", "")
-
-          start = s.find('ifneq ($(shell grep -Eq "^static int can_umount"')
-          stop = s.find('ifneq ($(shell grep -q "atomic_t filter_count;"')
-          if start >= 0 and stop > start:
-              s = s[:start] + s[stop:]
-          elif start >= 0:
-              raise SystemExit("cannot locate end of KSU_UMOUNT compatibility block")
+          start = s.find("ccflags-y += -DKSU_UMOUNT")
+          stop = s.find("ccflags-y += -Wno-implicit-function-declaration")
+          if start < 0:
+              raise SystemExit("KSU_UMOUNT marker not found")
+          if stop <= start:
+              raise SystemExit("cannot locate end of v1.0.9 KSU_UMOUNT compatibility block")
+          s = s[:start] + s[stop:]
 
           p.write_text(s)
           PY

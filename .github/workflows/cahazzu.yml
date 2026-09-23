@@ -74,6 +74,7 @@ jobs:
           test -x "$CLANG"
           TCROOT="$(dirname "$(dirname "$CLANG")")"
           echo "TCROOT=$TCROOT" >> "$GITHUB_ENV"
+          echo "TOOLBIN=$GITHUB_WORKSPACE/$TCROOT/bin" >> "$GITHUB_ENV"
           "$CLANG" --version | head -n3 | tee "compiler-${{ matrix.android }}.txt"
           test -x "$TCROOT/bin/ld.lld"
           test -x "$TCROOT/bin/llvm-ar"
@@ -101,9 +102,7 @@ jobs:
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
-
-          make O=out ARCH=arm64 surya_defconfig
+          make O=out ARCH=arm64 HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ surya_defconfig
 
           scripts/config --file out/.config -e KSU
           scripts/config --file out/.config -e KPROBES
@@ -119,12 +118,12 @@ jobs:
           scripts/config --file out/.config --set-str LOCALVERSION "-CahAzzu"
 
           make O=out ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CC="$TOOLBIN/clang" HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ \
+            LD="$TOOLBIN/ld.lld" AR="$TOOLBIN/llvm-ar" NM="$TOOLBIN/llvm-nm" \
+            OBJCOPY="$TOOLBIN/llvm-objcopy" OBJDUMP="$TOOLBIN/llvm-objdump" STRIP="$TOOLBIN/llvm-strip" \
+            CLANG_TRIPLE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="$TOOLBIN/arm-linux-gnueabi-" \
             olddefconfig
 
           grep -q '^CONFIG_KSU=y$' out/.config
@@ -143,16 +142,14 @@ jobs:
           export SUBARCH=arm64
           export KBUILD_BUILD_USER=CahAzzu
           export KBUILD_BUILD_HOST=CahAzzu
-          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
-
           make -j"$(nproc)" O=out \
             ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CC="$TOOLBIN/clang" HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ \
+            LD="$TOOLBIN/ld.lld" AR="$TOOLBIN/llvm-ar" NM="$TOOLBIN/llvm-nm" \
+            OBJCOPY="$TOOLBIN/llvm-objcopy" OBJDUMP="$TOOLBIN/llvm-objdump" STRIP="$TOOLBIN/llvm-strip" \
+            CLANG_TRIPLE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="$TOOLBIN/arm-linux-gnueabi-" \
             Image.gz dtbs 2>&1 | tee "$GITHUB_WORKSPACE/build-${{ matrix.android }}.log"
 
       - name: Assemble and validate

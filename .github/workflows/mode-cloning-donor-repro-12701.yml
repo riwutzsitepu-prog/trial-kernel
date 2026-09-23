@@ -343,8 +343,8 @@ jobs:
 
           export PATH="$GITHUB_WORKSPACE/proton-clang/bin:$PATH"
 
-          # These two symbols exist in the public source but not in donor
-          # IKCONFIG. Kconfig explicitly documents 0 as the neutral value.
+          # These symbols exist in the public tree but not in donor IKCONFIG.
+          # Kconfig documents 0 as the neutral value: do not force a cluster mask.
           scripts/config --file .config --set-val LITTLE_CPU_MASK 0
           scripts/config --file .config --set-val BIG_CPU_MASK 0
           make ARCH=arm64 olddefconfig

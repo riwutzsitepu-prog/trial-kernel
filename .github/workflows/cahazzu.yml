@@ -15,6 +15,7 @@ env:
   KSU_TAG: v1.1.1
   TOOLCHAIN_URL: https://github.com/greenforce-project/greenforce_clang/releases/download/26122023/greenforce-clang-12.0.1-26122023-1149.tar.zst
   ANYKERNEL_COMMIT: 020dfeccf9d7e962a48400fc94d3e451df92eead
+  HOOKS_URL: https://raw.githubusercontent.com/xiaoleGun/KernelSU_Action/bc7cd1c5abdd5be4481d3dfffc02076858ef9c13/patches/legacy_ksu_hooks.sh
 
 jobs:
   build:
@@ -95,6 +96,19 @@ jobs:
           git -C KernelSU-Next describe --tags --exact-match | grep -qx "$KSU_TAG"
           git -C KernelSU-Next rev-parse HEAD | tee "$GITHUB_WORKSPACE/ksu-${{ matrix.android }}.txt"
 
+      - name: Apply legacy KernelSU hooks
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          curl -fL --retry 5 "$HOOKS_URL" -o legacy_ksu_hooks.sh
+          bash legacy_ksu_hooks.sh
+          grep -q 'ksu_handle_execveat' fs/exec.c
+          grep -q 'ksu_handle_faccessat' fs/open.c
+          grep -q 'ksu_handle_vfs_read' fs/read_write.c
+          grep -q 'ksu_handle_stat' fs/stat.c
+          grep -q 'ksu_handle_input_handle_event' drivers/input/input.c
+
       - name: Configure CahAzzu
         shell: bash
         run: |
@@ -105,9 +119,9 @@ jobs:
           make O=out ARCH=arm64 HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ surya_defconfig
 
           scripts/config --file out/.config -e KSU
-          scripts/config --file out/.config -e KPROBES
-          scripts/config --file out/.config -e KPROBE_EVENTS
-          scripts/config --file out/.config -e KSU_KPROBES_HOOK
+          scripts/config --file out/.config -d KPROBES
+          scripts/config --file out/.config -d KPROBE_EVENTS
+          scripts/config --file out/.config -d KSU_KPROBES_HOOK
           scripts/config --file out/.config -e KSU_LSM_SECURITY_HOOKS
           scripts/config --file out/.config -e OVERLAY_FS
           scripts/config --file out/.config -e KALLSYMS
@@ -127,8 +141,452 @@ jobs:
             olddefconfig
 
           grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^CONFIG_KPROBES=y$' out/.config
-          grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' out/.config
+          grep -q '^# CONFIG_KPROBES is not set
+          grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
+          grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
+          cp out/.config "$GITHUB_WORKSPACE/CahAzzu-${{ matrix.android }}.config"
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -o pipefail
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER=CahAzzu
+          export KBUILD_BUILD_HOST=CahAzzu
+          make -j"$(nproc)" O=out \
+            ARCH=arm64 \
+            CC="$TOOLBIN/clang" HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ \
+            LD="$TOOLBIN/ld.lld" AR="$TOOLBIN/llvm-ar" NM="$TOOLBIN/llvm-nm" \
+            OBJCOPY="$TOOLBIN/llvm-objcopy" OBJDUMP="$TOOLBIN/llvm-objdump" STRIP="$TOOLBIN/llvm-strip" \
+            CLANG_TRIPLE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="$TOOLBIN/arm-linux-gnueabi-" \
+            Image.gz dtbs 2>&1 | tee "$GITHUB_WORKSPACE/build-${{ matrix.android }}.log"
+
+      - name: Assemble and validate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BOOT="kernel/out/arch/arm64/boot"
+          test -s "$BOOT/Image.gz"
+
+          DTBDIR="$BOOT/dts/vendor/qcom"
+          if [ ! -d "$DTBDIR" ]; then DTBDIR="$BOOT/dts/qcom"; fi
+          mapfile -t DTBS < <(find "$DTBDIR" -type f -name '*.dtb' | sort)
+          test "${#DTBS[@]}" -gt 0
+          cat "${DTBS[@]}" > dtb.img
+          test -s dtb.img
+
+          mapfile -t DTBOS < <(find "$BOOT/dts" -type f -name '*.dtbo' | sort)
+          if [ "${#DTBOS[@]}" -gt 0 ]; then
+            git clone --depth=1 https://android.googlesource.com/platform/system/libufdt libufdt
+            python3 libufdt/utils/src/mkdtboimg.py create dtbo.img --page_size=4096 "${DTBOS[@]}"
+            test -s dtbo.img
+          fi
+
+          mkdir -p "output-${{ matrix.android }}"
+          cp "$BOOT/Image.gz" "output-${{ matrix.android }}/Image.gz"
+          cp dtb.img "output-${{ matrix.android }}/dtb.img"
+          [ ! -f dtbo.img ] || cp dtbo.img "output-${{ matrix.android }}/dtbo.img"
+          cp "CahAzzu-${{ matrix.android }}.config" "output-${{ matrix.android }}/CahAzzu.config"
+          cp "source-${{ matrix.android }}.txt" "output-${{ matrix.android }}/source.txt"
+          cp "ksu-${{ matrix.android }}.txt" "output-${{ matrix.android }}/ksu.txt"
+          cp "compiler-${{ matrix.android }}.txt" "output-${{ matrix.android }}/compiler.txt"
+          cp "build-${{ matrix.android }}.log" "output-${{ matrix.android }}/build.log"
+
+          gzip -dc "$BOOT/Image.gz" > Image.raw
+          strings Image.raw | grep -m1 'Linux version' | tee "output-${{ matrix.android }}/kernel-version.txt"
+          grep -q 'CahAzzu' "output-${{ matrix.android }}/kernel-version.txt"
+          strings Image.raw | grep -q '/data/adb/ksud'
+          sha256sum "output-${{ matrix.android }}/Image.gz" "output-${{ matrix.android }}/dtb.img" \
+            | tee "output-${{ matrix.android }}/sha256.txt"
+
+      - name: Upload compiled ${{ matrix.android }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu-${{ matrix.android }}
+          path: output-${{ matrix.android }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu-${{ matrix.android }}-failure
+          path: |
+            build-${{ matrix.android }}.log
+            CahAzzu-${{ matrix.android }}.config
+            source-${{ matrix.android }}.txt
+            ksu-${{ matrix.android }}.txt
+            compiler-${{ matrix.android }}.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  package:
+    name: Package CahAzzu
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Download both kernels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: CahAzzu-A?
+          path: built
+
+      - name: Prepare AnyKernel3
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init package
+          cd package
+          git remote add origin https://github.com/osm0sis/AnyKernel3.git
+          git fetch --depth=1 origin "$ANYKERNEL_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ANYKERNEL_COMMIT"
+          cd ..
+          rm -rf package/.git
+          rm -f package/Image* package/dtb* package/*.zip package/*.sha1
+
+      - name: Create universal installer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp built/CahAzzu-A10/Image.gz package/Image-A10.gz
+          cp built/CahAzzu-A10/dtb.img package/dtb-A10.img
+          cp built/CahAzzu-A11/Image.gz package/Image-A11.gz
+          cp built/CahAzzu-A11/dtb.img package/dtb-A11.img
+          [ ! -f built/CahAzzu-A10/dtbo.img ] || cp built/CahAzzu-A10/dtbo.img package/dtbo-A10.img
+          [ ! -f built/CahAzzu-A11/dtbo.img ] || cp built/CahAzzu-A11/dtbo.img package/dtbo-A11.img
+
+          cat > package/anykernel.sh <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## CahAzzu - Poco X3 NFC (surya), Android 10-11
+
+          properties() { '
+          kernel.string=CahAzzu
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=surya
+          supported.versions=10-11
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          boot_attributes() {
+          set_perm_recursive 0 0 755 644 $RAMDISK/*;
+          set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          android_ver="$(file_getprop /system/build.prop ro.build.version.release)"
+          android_major="$(echo "$android_ver" | cut -d. -f1)"
+          rm -f Image.gz dtb.img dtbo.img
+
+          case "$android_major" in
+            10)
+              ui_print "CahAzzu: Android 10 / Linux 4.14.262";
+              cp -f Image-A10.gz Image.gz;
+              cp -f dtb-A10.img dtb.img;
+              [ ! -f dtbo-A10.img ] || cp -f dtbo-A10.img dtbo.img;
+              ;;
+            11)
+              ui_print "CahAzzu: Android 11 / Linux 4.14.246";
+              cp -f Image-A11.gz Image.gz;
+              cp -f dtb-A11.img dtb.img;
+              [ ! -f dtbo-A11.img ] || cp -f dtbo-A11.img dtbo.img;
+              ;;
+            *)
+              abort "CahAzzu supports Android 10 and Android 11 only.";
+              ;;
+          esac
+
+          dump_boot;
+          write_boot;
+          EOF
+          sed -i 's/^          //' package/anykernel.sh
+          chmod 755 package/anykernel.sh
+
+          grep -q '^kernel.string=CahAzzu$' package/anykernel.sh
+          grep -q '^device.name1=surya$' package/anykernel.sh
+          grep -q '^supported.versions=10-11$' package/anykernel.sh
+
+      - name: Build final CahAzzu.zip
+        shell: bash
+        run: |
+          set -euxo pipefail
+          (cd package && zip -r9 "$GITHUB_WORKSPACE/CahAzzu.zip" . \
+            -x '.git*' '*.md' 'LICENSE' 'Makefile' '*.zip' '*.sha1')
+          unzip -t CahAzzu.zip
+          unzip -l CahAzzu.zip | grep -q 'Image-A10.gz'
+          unzip -l CahAzzu.zip | grep -q 'Image-A11.gz'
+          unzip -l CahAzzu.zip | grep -q 'dtb-A10.img'
+          unzip -l CahAzzu.zip | grep -q 'dtb-A11.img'
+          sha256sum CahAzzu.zip | tee CahAzzu.sha256
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu
+          path: |
+            CahAzzu.zip
+            CahAzzu.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: CahAzzu
+          name: CahAzzu
+          body: |
+            Device: Poco X3 NFC (surya)
+            Android 10: Linux 4.14.262
+            Android 11: Linux 4.14.246
+            Root: KernelSU Next v1.1.1
+            Kernel name: CahAzzu
+            Installer: automatic Android 10/11 selection
+          files: |
+            CahAzzu.zip
+            CahAzzu.sha256
+          fail_on_unmatched_files: true
+ out/.config || true
+          if grep -q '^CONFIG_KSU_KPROBES_HOOK=y
+          grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
+          grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
+          cp out/.config "$GITHUB_WORKSPACE/CahAzzu-${{ matrix.android }}.config"
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -o pipefail
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER=CahAzzu
+          export KBUILD_BUILD_HOST=CahAzzu
+          make -j"$(nproc)" O=out \
+            ARCH=arm64 \
+            CC="$TOOLBIN/clang" HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++ \
+            LD="$TOOLBIN/ld.lld" AR="$TOOLBIN/llvm-ar" NM="$TOOLBIN/llvm-nm" \
+            OBJCOPY="$TOOLBIN/llvm-objcopy" OBJDUMP="$TOOLBIN/llvm-objdump" STRIP="$TOOLBIN/llvm-strip" \
+            CLANG_TRIPLE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE="$TOOLBIN/aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="$TOOLBIN/arm-linux-gnueabi-" \
+            Image.gz dtbs 2>&1 | tee "$GITHUB_WORKSPACE/build-${{ matrix.android }}.log"
+
+      - name: Assemble and validate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BOOT="kernel/out/arch/arm64/boot"
+          test -s "$BOOT/Image.gz"
+
+          DTBDIR="$BOOT/dts/vendor/qcom"
+          if [ ! -d "$DTBDIR" ]; then DTBDIR="$BOOT/dts/qcom"; fi
+          mapfile -t DTBS < <(find "$DTBDIR" -type f -name '*.dtb' | sort)
+          test "${#DTBS[@]}" -gt 0
+          cat "${DTBS[@]}" > dtb.img
+          test -s dtb.img
+
+          mapfile -t DTBOS < <(find "$BOOT/dts" -type f -name '*.dtbo' | sort)
+          if [ "${#DTBOS[@]}" -gt 0 ]; then
+            git clone --depth=1 https://android.googlesource.com/platform/system/libufdt libufdt
+            python3 libufdt/utils/src/mkdtboimg.py create dtbo.img --page_size=4096 "${DTBOS[@]}"
+            test -s dtbo.img
+          fi
+
+          mkdir -p "output-${{ matrix.android }}"
+          cp "$BOOT/Image.gz" "output-${{ matrix.android }}/Image.gz"
+          cp dtb.img "output-${{ matrix.android }}/dtb.img"
+          [ ! -f dtbo.img ] || cp dtbo.img "output-${{ matrix.android }}/dtbo.img"
+          cp "CahAzzu-${{ matrix.android }}.config" "output-${{ matrix.android }}/CahAzzu.config"
+          cp "source-${{ matrix.android }}.txt" "output-${{ matrix.android }}/source.txt"
+          cp "ksu-${{ matrix.android }}.txt" "output-${{ matrix.android }}/ksu.txt"
+          cp "compiler-${{ matrix.android }}.txt" "output-${{ matrix.android }}/compiler.txt"
+          cp "build-${{ matrix.android }}.log" "output-${{ matrix.android }}/build.log"
+
+          gzip -dc "$BOOT/Image.gz" > Image.raw
+          strings Image.raw | grep -m1 'Linux version' | tee "output-${{ matrix.android }}/kernel-version.txt"
+          grep -q 'CahAzzu' "output-${{ matrix.android }}/kernel-version.txt"
+          strings Image.raw | grep -q '/data/adb/ksud'
+          sha256sum "output-${{ matrix.android }}/Image.gz" "output-${{ matrix.android }}/dtb.img" \
+            | tee "output-${{ matrix.android }}/sha256.txt"
+
+      - name: Upload compiled ${{ matrix.android }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu-${{ matrix.android }}
+          path: output-${{ matrix.android }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu-${{ matrix.android }}-failure
+          path: |
+            build-${{ matrix.android }}.log
+            CahAzzu-${{ matrix.android }}.config
+            source-${{ matrix.android }}.txt
+            ksu-${{ matrix.android }}.txt
+            compiler-${{ matrix.android }}.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  package:
+    name: Package CahAzzu
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Download both kernels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: CahAzzu-A?
+          path: built
+
+      - name: Prepare AnyKernel3
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init package
+          cd package
+          git remote add origin https://github.com/osm0sis/AnyKernel3.git
+          git fetch --depth=1 origin "$ANYKERNEL_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ANYKERNEL_COMMIT"
+          cd ..
+          rm -rf package/.git
+          rm -f package/Image* package/dtb* package/*.zip package/*.sha1
+
+      - name: Create universal installer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp built/CahAzzu-A10/Image.gz package/Image-A10.gz
+          cp built/CahAzzu-A10/dtb.img package/dtb-A10.img
+          cp built/CahAzzu-A11/Image.gz package/Image-A11.gz
+          cp built/CahAzzu-A11/dtb.img package/dtb-A11.img
+          [ ! -f built/CahAzzu-A10/dtbo.img ] || cp built/CahAzzu-A10/dtbo.img package/dtbo-A10.img
+          [ ! -f built/CahAzzu-A11/dtbo.img ] || cp built/CahAzzu-A11/dtbo.img package/dtbo-A11.img
+
+          cat > package/anykernel.sh <<'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## CahAzzu - Poco X3 NFC (surya), Android 10-11
+
+          properties() { '
+          kernel.string=CahAzzu
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=surya
+          supported.versions=10-11
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+
+          boot_attributes() {
+          set_perm_recursive 0 0 755 644 $RAMDISK/*;
+          set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
+          }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          android_ver="$(file_getprop /system/build.prop ro.build.version.release)"
+          android_major="$(echo "$android_ver" | cut -d. -f1)"
+          rm -f Image.gz dtb.img dtbo.img
+
+          case "$android_major" in
+            10)
+              ui_print "CahAzzu: Android 10 / Linux 4.14.262";
+              cp -f Image-A10.gz Image.gz;
+              cp -f dtb-A10.img dtb.img;
+              [ ! -f dtbo-A10.img ] || cp -f dtbo-A10.img dtbo.img;
+              ;;
+            11)
+              ui_print "CahAzzu: Android 11 / Linux 4.14.246";
+              cp -f Image-A11.gz Image.gz;
+              cp -f dtb-A11.img dtb.img;
+              [ ! -f dtbo-A11.img ] || cp -f dtbo-A11.img dtbo.img;
+              ;;
+            *)
+              abort "CahAzzu supports Android 10 and Android 11 only.";
+              ;;
+          esac
+
+          dump_boot;
+          write_boot;
+          EOF
+          sed -i 's/^          //' package/anykernel.sh
+          chmod 755 package/anykernel.sh
+
+          grep -q '^kernel.string=CahAzzu$' package/anykernel.sh
+          grep -q '^device.name1=surya$' package/anykernel.sh
+          grep -q '^supported.versions=10-11$' package/anykernel.sh
+
+      - name: Build final CahAzzu.zip
+        shell: bash
+        run: |
+          set -euxo pipefail
+          (cd package && zip -r9 "$GITHUB_WORKSPACE/CahAzzu.zip" . \
+            -x '.git*' '*.md' 'LICENSE' 'Makefile' '*.zip' '*.sha1')
+          unzip -t CahAzzu.zip
+          unzip -l CahAzzu.zip | grep -q 'Image-A10.gz'
+          unzip -l CahAzzu.zip | grep -q 'Image-A11.gz'
+          unzip -l CahAzzu.zip | grep -q 'dtb-A10.img'
+          unzip -l CahAzzu.zip | grep -q 'dtb-A11.img'
+          sha256sum CahAzzu.zip | tee CahAzzu.sha256
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu
+          path: |
+            CahAzzu.zip
+            CahAzzu.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: CahAzzu
+          name: CahAzzu
+          body: |
+            Device: Poco X3 NFC (surya)
+            Android 10: Linux 4.14.262
+            Android 11: Linux 4.14.246
+            Root: KernelSU Next v1.1.1
+            Kernel name: CahAzzu
+            Installer: automatic Android 10/11 selection
+          files: |
+            CahAzzu.zip
+            CahAzzu.sha256
+          fail_on_unmatched_files: true
+ out/.config; then exit 1; fi
           grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
           grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
           cp out/.config "$GITHUB_WORKSPACE/CahAzzu-${{ matrix.android }}.config"

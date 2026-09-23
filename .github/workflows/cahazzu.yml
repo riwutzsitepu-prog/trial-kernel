@@ -69,8 +69,9 @@ jobs:
           curl -fL --retry 5 --retry-delay 3 "$TOOLCHAIN_URL" -o clang.tar.zst
           tar --zstd -xf clang.tar.zst -C tc
           rm -f clang.tar.zst
-          CLANG="$(find tc -path '*/bin/clang' -type f | head -n1)"
+          CLANG="$(find tc -path '*/bin/clang' -print -quit)"
           test -n "$CLANG"
+          test -x "$CLANG"
           TCROOT="$(dirname "$(dirname "$CLANG")")"
           echo "TCROOT=$TCROOT" >> "$GITHUB_ENV"
           "$CLANG" --version | head -n3 | tee "compiler-${{ matrix.android }}.txt"

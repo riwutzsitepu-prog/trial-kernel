@@ -95,6 +95,16 @@ jobs:
           test -x bin/clang
           ./bin/clang --version | head -n3 | tee "$GITHUB_WORKSPACE/compiler.txt"
 
+      - name: Fix Android 10 legacy DTC host build
+        if: matrix.android == '10'
+        run: |
+          set -euxo pipefail
+          cd kernel
+          sed -i '/^YYLTYPE yylloc;$/d' scripts/dtc/dtc-lexer.l
+          sed -i '/^YYLTYPE yylloc;$/d' scripts/dtc/dtc-lexer.lex.c_shipped
+          ! grep -q '^YYLTYPE yylloc;$' scripts/dtc/dtc-lexer.l
+          ! grep -q '^YYLTYPE yylloc;$' scripts/dtc/dtc-lexer.lex.c_shipped
+
       - name: Integrate exact KernelSU Next v1.1.1
         run: |
           set -euxo pipefail

@@ -125,15 +125,15 @@ jobs:
             -e '/^# CONFIG_LOCALVERSION_BRANCH_SHA/d' \
             "$DEFCONFIG"
 
-          cat >> "$DEFCONFIG" <<'EOF'
-CONFIG_KSU=y
-# CONFIG_KSU_KPROBES_HOOK is not set
-CONFIG_KSU_LSM_SECURITY_HOOKS=y
-# CONFIG_KSU_DEBUG is not set
-CONFIG_LOCALVERSION="-CahAzzu"
-# CONFIG_LOCALVERSION_AUTO is not set
-# CONFIG_LOCALVERSION_BRANCH_SHA is not set
-EOF
+          printf '%s\n' \
+            'CONFIG_KSU=y' \
+            '# CONFIG_KSU_KPROBES_HOOK is not set' \
+            'CONFIG_KSU_LSM_SECURITY_HOOKS=y' \
+            '# CONFIG_KSU_DEBUG is not set' \
+            'CONFIG_LOCALVERSION="-CahAzzu"' \
+            '# CONFIG_LOCALVERSION_AUTO is not set' \
+            '# CONFIG_LOCALVERSION_BRANCH_SHA is not set' \
+            >> "$DEFCONFIG"
 
           export ARCH=arm64
           export SUBARCH=arm64

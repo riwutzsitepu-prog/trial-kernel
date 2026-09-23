@@ -76,6 +76,14 @@ jobs:
           TCROOT="$(dirname "$(dirname "$CLANG")")"
           echo "TCROOT=$TCROOT" >> "$GITHUB_ENV"
           echo "TOOLBIN=$GITHUB_WORKSPACE/$TCROOT/bin" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/toolwrap"
+          for x in clang clang++ ld.lld llvm-ar llvm-nm llvm-dis llvm-objcopy llvm-objdump llvm-strip; do
+            [ ! -e "$TCROOT/bin/$x" ] || ln -sf "$GITHUB_WORKSPACE/$TCROOT/bin/$x" "$GITHUB_WORKSPACE/toolwrap/$x"
+          done
+          for x in "$TCROOT"/bin/aarch64-linux-gnu-* "$TCROOT"/bin/arm-linux-gnueabi-*; do
+            [ ! -e "$x" ] || ln -sf "$GITHUB_WORKSPACE/$x" "$GITHUB_WORKSPACE/toolwrap/$(basename "$x")"
+          done
+          echo "PATH=$GITHUB_WORKSPACE/toolwrap:$PATH" >> "$GITHUB_ENV"
           "$CLANG" --version | head -n3 | tee "compiler-${{ matrix.android }}.txt"
           test -x "$TCROOT/bin/ld.lld"
           test -x "$TCROOT/bin/llvm-ar"

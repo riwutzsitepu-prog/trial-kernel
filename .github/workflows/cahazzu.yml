@@ -142,7 +142,8 @@ jobs:
           make O=out ARCH=arm64 surya_defconfig
 
           grep -q '^CONFIG_KSU=y$' out/.config
-          ! grep -q '^CONFIG_KSU_KPROBES_HOOK=y          grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' out/.config
+          if grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' out/.config; then exit 1; fi
+          grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' out/.config
           grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
           grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
           cp out/.config "$GITHUB_WORKSPACE/CahAzzu.config"

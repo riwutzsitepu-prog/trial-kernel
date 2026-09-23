@@ -1,0 +1,268 @@
+name: CahAzzu
+
+on:
+  push:
+    branches:
+      - cahazzu-build
+    paths:
+      - .github/workflows/cahazzu.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    env:
+      KERNEL_REPO: https://github.com/stormbreaker-project/kernel_xiaomi_surya.git
+      KERNEL_COMMIT: 07843c4a74f3fde3df48b941091ce41141fe886d
+      KSU_TAG: v1.1.1
+      KSU_COMMIT: 0d6bdc6364cbfc73517dcfdf7ab23b0ba8045553
+      HOOKS_URL: https://raw.githubusercontent.com/xiaoleGun/KernelSU_Action/bc7cd1c5abdd5be4481d3dfffc02076858ef9c13/patches/legacy_ksu_hooks.sh
+      ANYKERNEL_REPO: https://github.com/stormbreaker-project/AnyKernel3.git
+      ANYKERNEL_COMMIT: 3bef00bbe39ba5c97216912c29792c4260e06315
+      TC_URL: https://github.com/greenforce-project/greenforce_clang/releases/download/26122023/greenforce-clang-12.0.1-26122023-1149.tar.zst
+      ZIP_NAME: CahAzzu.zip
+      RELEASE_TAG: CahAzzu
+
+    steps:
+      - name: Checkout trigger repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl file flex git \
+            libelf-dev libssl-dev make python3 python-is-python3 rsync unzip \
+            xz-utils zip zstd
+
+      - name: Clone exact StormBreaker surya source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init kernel
+          cd kernel
+          git remote add origin "$KERNEL_REPO"
+          git fetch --depth=1 origin "$KERNEL_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$KERNEL_COMMIT"
+          grep -q '^VERSION = 4$' Makefile
+          grep -q '^PATCHLEVEL = 14$' Makefile
+          grep -q '^SUBLEVEL = 254$' Makefile
+          test -f arch/arm64/configs/surya_defconfig
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/kernel-source-sha.txt"
+
+      - name: Prepare Greenforce Clang 12
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p tc
+          curl -fL --retry 5 --retry-delay 3 "$TC_URL" -o greenforce.tar.zst
+          tar --zstd -xf greenforce.tar.zst -C tc
+          rm -f greenforce.tar.zst
+          CLANG="$(find tc -path '*/bin/clang' | head -n1)"
+          test -n "$CLANG"
+          TCROOT="$(dirname "$(dirname "$CLANG")")"
+          echo "TCROOT=$TCROOT" >> "$GITHUB_ENV"
+          "$CLANG" --version | tee compiler.txt
+          grep -q 'greenforce clang version 12.0.1' compiler.txt
+          test -x "$TCROOT/bin/aarch64-linux-gnu-as"
+          test -x "$TCROOT/bin/arm-linux-gnueabi-as"
+
+      - name: Integrate KernelSU Next v1.1.1
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          rm -f drivers/kernelsu
+          rm -rf KernelSU KernelSU-Next
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/$KSU_TAG/kernel/setup.sh" | bash -s "$KSU_TAG"
+          test -L drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig
+          test -f KernelSU-Next/kernel/ksu.c
+          test "$(git -C KernelSU-Next rev-parse HEAD)" = "$KSU_COMMIT"
+          git -C KernelSU-Next rev-parse HEAD | tee "$GITHUB_WORKSPACE/ksu-source-sha.txt"
+
+      - name: Apply non-kprobe hooks
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          curl -fL --retry 5 "$HOOKS_URL" -o legacy_ksu_hooks.sh
+          bash legacy_ksu_hooks.sh
+          grep -q 'ksu_handle_execveat' fs/exec.c
+          grep -q 'ksu_handle_faccessat' fs/open.c
+          grep -q 'ksu_handle_vfs_read' fs/read_write.c
+          grep -q 'ksu_handle_stat' fs/stat.c
+          grep -q 'ksu_handle_input_handle_event' drivers/input/input.c
+
+      - name: Configure CahAzzu
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          DEFCONFIG=arch/arm64/configs/surya_defconfig
+
+          sed -i \
+            -e '/^CONFIG_KSU=/d' \
+            -e '/^# CONFIG_KSU/d' \
+            -e '/^CONFIG_KSU_KPROBES_HOOK=/d' \
+            -e '/^# CONFIG_KSU_KPROBES_HOOK/d' \
+            -e '/^CONFIG_KSU_LSM_SECURITY_HOOKS=/d' \
+            -e '/^# CONFIG_KSU_LSM_SECURITY_HOOKS/d' \
+            -e '/^CONFIG_KSU_DEBUG=/d' \
+            -e '/^# CONFIG_KSU_DEBUG/d' \
+            -e '/^CONFIG_LOCALVERSION=/d' \
+            -e '/^CONFIG_LOCALVERSION_AUTO=/d' \
+            -e '/^# CONFIG_LOCALVERSION_AUTO/d' \
+            -e '/^CONFIG_LOCALVERSION_BRANCH_SHA=/d' \
+            -e '/^# CONFIG_LOCALVERSION_BRANCH_SHA/d' \
+            "$DEFCONFIG"
+
+          cat >> "$DEFCONFIG" <<'EOF'
+CONFIG_KSU=y
+# CONFIG_KSU_KPROBES_HOOK is not set
+CONFIG_KSU_LSM_SECURITY_HOOKS=y
+# CONFIG_KSU_DEBUG is not set
+CONFIG_LOCALVERSION="-CahAzzu"
+# CONFIG_LOCALVERSION_AUTO is not set
+# CONFIG_LOCALVERSION_BRANCH_SHA is not set
+EOF
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
+
+          make O=out ARCH=arm64 surya_defconfig
+
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^# CONFIG_KSU_KPROBES_HOOK is not set$' out/.config
+          grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' out/.config
+          grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
+          grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
+          cp out/.config "$GITHUB_WORKSPACE/CahAzzu.config"
+
+      - name: Build CahAzzu
+        shell: bash
+        run: |
+          set -o pipefail
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER=CahAzzu
+          export KBUILD_BUILD_HOST=CahAzzu
+          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
+
+          clang --version | head -n3 | tee "$GITHUB_WORKSPACE/compiler-build.txt"
+
+          make -j"$(nproc)" O=out \
+            ARCH=arm64 \
+            CC=clang HOSTCC=clang HOSTCXX=clang++ \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image.gz dtb.img dtbo.img 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Validate kernel output
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BOOT=kernel/out/arch/arm64/boot
+          test -s "$BOOT/Image.gz"
+          test -s "$BOOT/dtb.img"
+          test -s "$BOOT/dtbo.img"
+          gzip -dc "$BOOT/Image.gz" > Image.raw
+          strings Image.raw | grep -m1 'Linux version' | tee kernel-version.txt
+          strings Image.raw | grep -q 'CahAzzu'
+          strings Image.raw | grep -q 'KernelSU'
+          grep -q -- '-- KernelSU-Next version:' build.log
+          grep -q -- 'KernelSU-Next Manager signature hash:' build.log
+          sha256sum "$BOOT/Image.gz" "$BOOT/dtb.img" "$BOOT/dtbo.img" \
+            | tee compiled-images.sha256
+
+      - name: Package CahAzzu
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init package
+          cd package
+          git remote add origin "$ANYKERNEL_REPO"
+          git fetch --depth=1 origin "$ANYKERNEL_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ANYKERNEL_COMMIT"
+          cd ..
+
+          rm -rf package/.git
+          rm -f package/Image* package/dtb.img package/dtbo.img package/*.zip package/*.sha1
+          cp kernel/out/arch/arm64/boot/Image.gz package/Image.gz
+          cp kernel/out/arch/arm64/boot/dtb.img package/dtb.img
+          cp kernel/out/arch/arm64/boot/dtbo.img package/dtbo.img
+
+          sed -i 's/^kernel.string=.*/kernel.string=CahAzzu/' package/anykernel.sh
+          sed -i 's/^maintainer.string1=.*/maintainer.string1=CahAzzu/' package/anykernel.sh
+          sed -i 's/^supported.versions=.*/supported.versions=10-11/' package/anykernel.sh
+          sed -i '/^device.name2=/d' package/anykernel.sh
+
+          grep -q '^kernel.string=CahAzzu$' package/anykernel.sh
+          grep -q '^device.name1=surya$' package/anykernel.sh
+          grep -q '^supported.versions=10-11$' package/anykernel.sh
+
+          (cd package && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
+            -x 'Makefile' '*.git*' '*.jar*' '*.md*' '*.zip*')
+
+      - name: Final validation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          unzip -t "$ZIP_NAME"
+          unzip -l "$ZIP_NAME" | grep -q 'Image.gz'
+          unzip -l "$ZIP_NAME" | grep -q 'dtb.img'
+          unzip -l "$ZIP_NAME" | grep -q 'dtbo.img'
+          unzip -p "$ZIP_NAME" anykernel.sh | grep -q '^kernel.string=CahAzzu$'
+          unzip -p "$ZIP_NAME" anykernel.sh | grep -q '^device.name1=surya$'
+          unzip -p "$ZIP_NAME" anykernel.sh | grep -q '^supported.versions=10-11$'
+          sha256sum "$ZIP_NAME" | tee CahAzzu.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu
+          path: |
+            CahAzzu.zip
+            CahAzzu.sha256
+            kernel-version.txt
+            compiled-images.sha256
+            kernel-source-sha.txt
+            ksu-source-sha.txt
+            CahAzzu.config
+            compiler-build.txt
+            build.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: CahAzzu
+          name: CahAzzu
+          body: |
+            Device: Poco X3 NFC (surya)
+            Android: 10-11
+            Kernel: Linux 4.14.254
+            Root: KernelSU Next v1.1.1
+            Hook mode: non-kprobe
+          files: |
+            CahAzzu.zip
+            CahAzzu.sha256
+            kernel-version.txt
+            compiled-images.sha256
+            kernel-source-sha.txt
+            ksu-source-sha.txt
+          fail_on_unmatched_files: true

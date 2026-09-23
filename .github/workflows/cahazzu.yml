@@ -142,7 +142,130 @@ jobs:
           make O=out ARCH=arm64 surya_defconfig
 
           grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^# CONFIG_KSU_KPROBES_HOOK is not set$' out/.config
+          ! grep -q '^CONFIG_KSU_KPROBES_HOOK=y          grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' out/.config
+          grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
+          grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config
+          cp out/.config "$GITHUB_WORKSPACE/CahAzzu.config"
+
+      - name: Build CahAzzu
+        shell: bash
+        run: |
+          set -o pipefail
+          cd kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER=CahAzzu
+          export KBUILD_BUILD_HOST=CahAzzu
+          export PATH="$GITHUB_WORKSPACE/$TCROOT/bin:$PATH"
+
+          clang --version | head -n3 | tee "$GITHUB_WORKSPACE/compiler-build.txt"
+
+          make -j"$(nproc)" O=out \
+            ARCH=arm64 \
+            CC=clang HOSTCC=clang HOSTCXX=clang++ \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image.gz dtb.img dtbo.img 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Validate kernel output
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BOOT=kernel/out/arch/arm64/boot
+          test -s "$BOOT/Image.gz"
+          test -s "$BOOT/dtb.img"
+          test -s "$BOOT/dtbo.img"
+          gzip -dc "$BOOT/Image.gz" > Image.raw
+          strings Image.raw | grep -m1 'Linux version' | tee kernel-version.txt
+          strings Image.raw | grep -q 'CahAzzu'
+          strings Image.raw | grep -q 'KernelSU'
+          grep -q -- '-- KernelSU-Next version:' build.log
+          grep -q -- 'KernelSU-Next Manager signature hash:' build.log
+          sha256sum "$BOOT/Image.gz" "$BOOT/dtb.img" "$BOOT/dtbo.img" \
+            | tee compiled-images.sha256
+
+      - name: Package CahAzzu
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init package
+          cd package
+          git remote add origin "$ANYKERNEL_REPO"
+          git fetch --depth=1 origin "$ANYKERNEL_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ANYKERNEL_COMMIT"
+          cd ..
+
+          rm -rf package/.git
+          rm -f package/Image* package/dtb.img package/dtbo.img package/*.zip package/*.sha1
+          cp kernel/out/arch/arm64/boot/Image.gz package/Image.gz
+          cp kernel/out/arch/arm64/boot/dtb.img package/dtb.img
+          cp kernel/out/arch/arm64/boot/dtbo.img package/dtbo.img
+
+          sed -i 's/^kernel.string=.*/kernel.string=CahAzzu/' package/anykernel.sh
+          sed -i 's/^maintainer.string1=.*/maintainer.string1=CahAzzu/' package/anykernel.sh
+          sed -i 's/^supported.versions=.*/supported.versions=10-11/' package/anykernel.sh
+          sed -i '/^device.name2=/d' package/anykernel.sh
+
+          grep -q '^kernel.string=CahAzzu$' package/anykernel.sh
+          grep -q '^device.name1=surya$' package/anykernel.sh
+          grep -q '^supported.versions=10-11$' package/anykernel.sh
+
+          (cd package && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
+            -x 'Makefile' '*.git*' '*.jar*' '*.md*' '*.zip*')
+
+      - name: Final validation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          unzip -t "$ZIP_NAME"
+          unzip -l "$ZIP_NAME" | grep -q 'Image.gz'
+          unzip -l "$ZIP_NAME" | grep -q 'dtb.img'
+          unzip -l "$ZIP_NAME" | grep -q 'dtbo.img'
+          unzip -p "$ZIP_NAME" anykernel.sh | grep -q '^kernel.string=CahAzzu$'
+          unzip -p "$ZIP_NAME" anykernel.sh | grep -q '^device.name1=surya$'
+          unzip -p "$ZIP_NAME" anykernel.sh | grep -q '^supported.versions=10-11$'
+          sha256sum "$ZIP_NAME" | tee CahAzzu.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CahAzzu
+          path: |
+            CahAzzu.zip
+            CahAzzu.sha256
+            kernel-version.txt
+            compiled-images.sha256
+            kernel-source-sha.txt
+            ksu-source-sha.txt
+            CahAzzu.config
+            compiler-build.txt
+            build.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: CahAzzu
+          name: CahAzzu
+          body: |
+            Device: Poco X3 NFC (surya)
+            Android: 10-11
+            Kernel: Linux 4.14.254
+            Root: KernelSU Next v1.1.1
+            Hook mode: non-kprobe
+          files: |
+            CahAzzu.zip
+            CahAzzu.sha256
+            kernel-version.txt
+            compiled-images.sha256
+            kernel-source-sha.txt
+            ksu-source-sha.txt
+          fail_on_unmatched_files: true
+ out/.config
           grep -q '^CONFIG_KSU_LSM_SECURITY_HOOKS=y$' out/.config
           grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
           grep -q '^CONFIG_LOCALVERSION="-CahAzzu"$' out/.config

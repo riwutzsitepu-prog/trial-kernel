@@ -1,0 +1,179 @@
+name: Floppy v1.2 Ginkgo A10 StockCFG
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/floppy-v1.2-ginkgo-a10-stockcfg.yml'
+  push:
+    branches:
+      - floppy-v1.2-ginkgo-a10-stockcfg
+    paths:
+      - '.github/workflows/floppy-v1.2-ginkgo-a10-stockcfg.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout trigger repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential brotli ccache cpio curl flex git \
+            kmod libelf-dev libssl-dev libncurses-dev libtinfo5 \
+            python3 unzip wget zip zstd xz-utils
+
+      - name: Clone exact Floppy v1.2 source
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --branch flop-v1.2 \
+            https://github.com/FlopKernel-Series/flop_trinket-mi_kernel.git kernel
+          cd kernel
+          git rev-parse HEAD | tee ../FLOPPY_SOURCE_COMMIT.txt
+          test -f arch/arm64/configs/ginkgo-stock_defconfig
+          test -f arch/arm64/configs/vendor/ginkgo.config
+          test -f arch/arm64/configs/vendor/xiaomi-trinket.config
+          test -f arch/arm64/configs/ksu.config
+
+      - name: Convert Floppy build to Android 10 stock configuration
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+
+          # Use Xiaomi/ginkgo stock scheduler/userspace interface as the base.
+          sed -i 's#DEFAULT_DEFCONFIG="vendor/trinket-perf_defconfig"#DEFAULT_DEFCONFIG="ginkgo-stock_defconfig"#' ckbuild.sh
+
+          # Reproduce the compiler used by the official v1.2 release.
+          sed -i 's#CURRENT_CLANG=$(curl -s "$AOSP_REPO" | grep -oE "clang-r[0-9a-f]*" | sort -u | tail -n1)#CURRENT_CLANG="clang-r563880"#' ckbuild.sh || true
+
+          # Never attempt external log uploads from CI.
+          sed -i 's/^LOG_UPLOAD=1$/LOG_UPLOAD=0/' ckbuild.sh
+
+          # Keep the A10-safe stock scheduler ABI. These checks deliberately
+          # fail the job if we accidentally fall back to the v1.2 perf config.
+          grep -q '^CONFIG_SCHED_TUNE=y$' arch/arm64/configs/ginkgo-stock_defconfig
+          grep -q '^CONFIG_RT_GROUP_SCHED=y$' arch/arm64/configs/ginkgo-stock_defconfig
+          grep -q '^CONFIG_HZ=100$' arch/arm64/configs/ginkgo-stock_defconfig
+          grep -q '^# CONFIG_SCHED_WALT is not set$' arch/arm64/configs/ginkgo-stock_defconfig
+          if grep -q '^CONFIG_UCLAMP_TASK=y$' arch/arm64/configs/ginkgo-stock_defconfig; then
+            echo "ERROR: stock config unexpectedly enables UCLAMP"
+            exit 1
+          fi
+
+          # ckbuild reads these even when Telegram upload is disabled.
+          : > ../chat_test
+          : > ../bot_token
+
+      - name: Build Floppy 4.14.364 with KSUNext on A10 stock config
+        working-directory: kernel
+        env:
+          WP: ${{ github.workspace }}
+          CLANG_TYPE: aosp
+        run: |
+          set -euxo pipefail
+          bash ckbuild.sh ginkgo kcR
+          cd ..
+          ZIP="$(find . -maxdepth 1 -type f -name 'Floppy_v1.2-KSUNext-ginkgo-*.zip' | head -n1)"
+          test -n "$ZIP"
+          test -s "$ZIP"
+          cp "$ZIP" Floppy-v1.2-built.zip
+
+      - name: Repack A10 boot-only installer
+        run: |
+          set -euxo pipefail
+          rm -rf pkg output
+          mkdir -p pkg output
+          unzip -q Floppy-v1.2-built.zip -d pkg
+
+          # A10 must retain the ROM/vendor DTBO.
+          rm -f pkg/dtbo.img
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("pkg/anykernel.sh")
+          s = p.read_text()
+
+          # Device/version identity.
+          import re
+          s = re.sub(r"supported\.versions=.*", "supported.versions=10", s)
+
+          # Do not replace the ROM DTBO.
+          s = re.sub(r"(?m)^\s*flash_dtbo;?\s*$", "", s)
+
+          # Disable the newer uname/BPF spoof path on A10.
+          s = re.sub(
+              r'if \[ "\$ROM_CODENAME" = "HyperMINT" \]; then.*?fi',
+              'ui_print "Android 10 mode: uname BPF spoof disabled";\npatch_cmdline "uname_bpf_spoof" "uname_bpf_spoof=0"',
+              s,
+              flags=re.S,
+          )
+
+          # Force the old timestamp source on Android 10 instead of relying on
+          # system mount/build.prop detection in recovery.
+          s = re.sub(
+              r'# Enable legacy timestamp source for A11 and below.*?fi',
+              '# Android 10 legacy timestamp source\npatch_cmdline "legacy_timestamp_source" "legacy_timestamp_source=1"',
+              s,
+              flags=re.S,
+          )
+
+          # Add a clear installer banner.
+          marker = '. tools/ak3-core.sh;'
+          if marker in s:
+              s = s.replace(
+                  marker,
+                  marker + '\n\nui_print " ";\nui_print " Floppy v1.2 A10 STOCKCFG - ginkgo";\nui_print " 4.14.364 + KernelSU Next | DTBO preserved";\nui_print " ";',
+                  1,
+              )
+
+          p.write_text(s)
+          PY
+
+          # Sanity checks: boot-only and Android 10 only.
+          grep -q 'supported.versions=10' pkg/anykernel.sh
+          ! grep -Eq '^[[:space:]]*flash_dtbo;?[[:space:]]*$' pkg/anykernel.sh
+          test ! -e pkg/dtbo.img
+          test -s pkg/Image.gz-dtb
+          test -s pkg/tools/ak3-core.sh
+
+          (
+            cd pkg
+            zip -r9 ../output/Floppy_v1.2-KSUNext-ginkgo-A10-STOCKCFG-FINAL.zip . \
+              -x '*.git*' README.md '*placeholder*'
+          )
+
+          unzip -t output/Floppy_v1.2-KSUNext-ginkgo-A10-STOCKCFG-FINAL.zip
+          sha256sum output/Floppy_v1.2-KSUNext-ginkgo-A10-STOCKCFG-FINAL.zip \
+            | tee output/SHA256SUMS.txt
+
+          cp kernel/out/.config output/kernel.config || true
+          {
+            echo "Device: Redmi Note 8 / 8T (ginkgo/willow)"
+            echo "Target: Android 10"
+            echo "Source: FloppyKernel v1.2 / Linux 4.14.364"
+            echo "Base config: ginkgo-stock_defconfig"
+            echo "Scheduler ABI: SCHED_TUNE legacy, no UCLAMP"
+            echo "HZ: 100"
+            echo "Root: KernelSU Next from Floppy v1.2 source"
+            echo "Installer: AnyKernel3 boot-only"
+            echo "DTBO: preserved"
+            echo -n "Source commit: "
+            cat FLOPPY_SOURCE_COMMIT.txt
+          } | tee output/BUILD-INFO.txt
+
+      - name: Upload A10 final artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Floppy-v1.2-KSUNext-ginkgo-A10-STOCKCFG-FINAL
+          path: output/*
+          if-no-files-found: error
+          retention-days: 30

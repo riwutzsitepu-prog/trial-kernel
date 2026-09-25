@@ -231,10 +231,9 @@ jobs:
           git clone --depth=1 --branch floppy-reborn \
             https://github.com/Flopster101/AnyKernel3.git AnyKernel3
           rm -rf AnyKernel3/.git
-          rm -f AnyKernel3/Image* AnyKernel3/dtbo.img AnyKernel3/README.md
+          rm -f AnyKernel3/Image* AnyKernel3/dtb AnyKernel3/dtbo.img AnyKernel3/README.md
 
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-          cp kernel/out/arch/arm64/boot/dts/xiaomi/qcom-base/trinket.dtb AnyKernel3/dtb
 
           python3 - <<'PY'
           from pathlib import Path
@@ -275,7 +274,6 @@ jobs:
           ! grep -Eq '^[[:space:]]*flash_dtbo;?[[:space:]]*$' AnyKernel3/anykernel.sh
           test ! -e AnyKernel3/dtbo.img
           test -s AnyKernel3/Image.gz-dtb
-          test -s AnyKernel3/dtb
           test -s AnyKernel3/tools/ak3-core.sh
 
           (

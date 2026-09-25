@@ -28,7 +28,7 @@ jobs:
             kmod libelf-dev libssl-dev libncurses-dev libtinfo5 \
             python3 unzip wget zip zstd xz-utils
 
-      - name: Clone exact Floppy v2.0b source
+      - name: Fetch exact Floppy v2.0b source
         run: |
           set -euxo pipefail
           mkdir kernel
@@ -37,194 +37,147 @@ jobs:
           git remote add origin https://github.com/FlopKernel-Series/flop_trinket-mi_kernel.git
           git fetch --depth=1 origin c318f003c0bd9f9ef7b6bf4b1f06974c57b4cd32
           git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "c318f003c0bd9f9ef7b6bf4b1f06974c57b4cd32"
           git rev-parse HEAD | tee ../FLOPPY_V2_SOURCE_COMMIT.txt
+          test -f build/ckbuild.sh
+          test -f arch/arm64/configs/ginkgo-stock_defconfig
+          test -f arch/arm64/configs/vendor/ginkgo.config
+          test -f arch/arm64/configs/ksu.config
 
-      - name: Patch source for Android 10 stock config
+      - name: Patch Android 10 FAST source and config
         working-directory: kernel
         run: |
           set -euxo pipefail
 
+          sed -i 's#DEFAULT_DEFCONFIG="vendor/trinket-perf_defconfig"#DEFAULT_DEFCONFIG="ginkgo-stock_defconfig"#' build/ckbuild.sh
+          sed -i 's#FK_VER="v2.0b"#FK_VER="v2.0b-A10FAST"#' build/ckbuild.sh
+          sed -i 's/^LOG_UPLOAD=1$/LOG_UPLOAD=0/' build/ckbuild.sh
+
+          cat >> arch/arm64/configs/ginkgo-stock_defconfig <<'EOF'
+          # RIWUTZ A10 FAST overrides
+          # CONFIG_SECURITY_SMACK is not set
+          CONFIG_LITTLE_CPU_MASK=15
+          CONFIG_BIG_CPU_MASK=240
+          CONFIG_BIG_CPU_FIRST_MASK=0
+          CONFIG_BIG_CPU_SECOND_MASK=0
+          CONFIG_BPF_JIT=y
+          CONFIG_BPF_JIT_ALWAYS_ON=y
+          CONFIG_BPF_JIT_DEFAULT_ON=y
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          EOF
+
+          sed -i 's/^CONFIG_KSU_SUSFS_ENABLE_LOG=y$/# CONFIG_KSU_SUSFS_ENABLE_LOG is not set/' arch/arm64/configs/ksu.config
+
           sed -i '/^#ifdef CONFIG_INITRAMFS_IGNORE_SKIP_FLAG$/,/^#endif$/c\#include <asm/setup.h>' fs/proc/cmdline.c
           sed -i 's/static inline bool is_battery_saver_on()/static inline bool is_battery_saver_on(void)/' include/linux/battery_saver.h
 
-          python3 - <<'PY'
-          from pathlib import Path
+          python3 -c 'from pathlib import Path; p=Path("net/ipv4/tcp_cong.c"); s=p.read_text(); m="/* Set default value from kernel configuration at bootup */"; s=s if "#ifndef CONFIG_DEFAULT_TCP_CONG" in s else s.replace(m, "#ifndef CONFIG_DEFAULT_TCP_CONG\n#define CONFIG_DEFAULT_TCP_CONG \"cubic\"\n#endif\n\n"+m, 1); p.write_text(s)'
 
-          p = Path("net/ipv4/tcp_cong.c")
-          s = p.read_text()
-          marker = "/* Set default value from kernel configuration at bootup */"
-          if "#ifndef CONFIG_DEFAULT_TCP_CONG" not in s and marker in s:
-              s = s.replace(
-                  marker,
-                  '#ifndef CONFIG_DEFAULT_TCP_CONG\n#define CONFIG_DEFAULT_TCP_CONG "cubic"\n#endif\n\n' + marker,
-                  1,
-              )
-          p.write_text(s)
+          python3 -c 'from pathlib import Path; p=Path("kernel/bpf/core.c"); s=p.read_text(); x="EVAL4(PROG_NAME_LIST, 416, 448, 480, 512)\n\n#undef PROG_NAME_LIST"; s=s.replace(x, "EVAL4(PROG_NAME_LIST, 416, 448, 480, 512)\n};\n\n#undef PROG_NAME_LIST", 1) if x in s else s; x2="\n}\n\n};\n\n#else\n"; s=s.replace(x2, "\n}\n\n#else\n", 1) if x2 in s else s; p.write_text(s)'
 
-          p = Path("kernel/bpf/core.c")
-          s = p.read_text()
-          x = "EVAL4(PROG_NAME_LIST, 416, 448, 480, 512)\n\n#undef PROG_NAME_LIST"
-          if x in s:
-              s = s.replace(
-                  x,
-                  "EVAL4(PROG_NAME_LIST, 416, 448, 480, 512)\n};\n\n#undef PROG_NAME_LIST",
-                  1,
-              )
-          x2 = "\n}\n\n};\n\n#else\n"
-          if x2 in s:
-              s = s.replace(x2, "\n}\n\n#else\n", 1)
-          p.write_text(s)
+          python3 -c 'from pathlib import Path; p=Path("drivers/media/platform/msm/camera_v2/isp/msm_isp_util.c"); s=p.read_text(); s=s.replace("trace_msm_cam_ping_pong_debug_dump(\n\t\t\tvfe_dev->common_data->vfe_irq_dump.irq_debug[", "trace_msm_cam_ping_pong_debug_dump(\n\t\t\t&vfe_dev->common_data->vfe_irq_dump.irq_debug[", 1); s=s.replace("trace_msm_cam_tasklet_debug_dump(\n\t\t\tvfe_dev->common_data->vfe_irq_dump.tasklet_debug[", "trace_msm_cam_tasklet_debug_dump(\n\t\t\t&vfe_dev->common_data->vfe_irq_dump.tasklet_debug[", 1); p.write_text(s)'
 
-          p = Path("drivers/media/platform/msm/camera_v2/isp/msm_isp_util.c")
-          s = p.read_text()
-          s = s.replace(
-              "trace_msm_cam_ping_pong_debug_dump(\n\t\t\tvfe_dev->common_data->vfe_irq_dump.irq_debug[",
-              "trace_msm_cam_ping_pong_debug_dump(\n\t\t\t&vfe_dev->common_data->vfe_irq_dump.irq_debug[",
-              1,
-          )
-          s = s.replace(
-              "trace_msm_cam_tasklet_debug_dump(\n\t\t\tvfe_dev->common_data->vfe_irq_dump.tasklet_debug[",
-              "trace_msm_cam_tasklet_debug_dump(\n\t\t\t&vfe_dev->common_data->vfe_irq_dump.tasklet_debug[",
-              1,
-          )
-          p.write_text(s)
-          PY
+          grep -q 'DEFAULT_DEFCONFIG="ginkgo-stock_defconfig"' build/ckbuild.sh
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' arch/arm64/configs/ginkgo-stock_defconfig
+          grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' arch/arm64/configs/ksu.config
 
-      - name: Prepare pinned clang-r563880
+      - name: Prepare pinned compiler
         run: |
           set -euxo pipefail
-          mkdir -p toolchains/aosp toolchains/gcc64 toolchains/gcc32
+          mkdir -p toolchains/aospclang toolchains/gcc toolchains/gcc64
 
           wget -q --show-progress \
             https://github.com/zzh20188/ZTC-Kernel-Build/releases/download/clang/clang-r563880.tar.gz \
             -O /tmp/clang-r563880.tar.gz
+
           echo "cf64c238acce155ab75ffe00e9b9a6d4007b3ffd0d31598e3275e40df6830743  /tmp/clang-r563880.tar.gz" \
             | sha256sum -c -
-          tar -xf /tmp/clang-r563880.tar.gz -C toolchains/aosp
+
+          tar -xf /tmp/clang-r563880.tar.gz -C toolchains/aospclang
           rm -f /tmp/clang-r563880.tar.gz
 
           git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
             toolchains/gcc64
+
           git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
-            toolchains/gcc32
+            toolchains/gcc
 
-          test -x toolchains/aosp/bin/clang
-          toolchains/aosp/bin/clang --version | head -n1
+          test -x toolchains/aospclang/bin/clang
+          toolchains/aospclang/bin/clang --version | head -n 1
 
-      - name: Configure Android 10 FAST kernel
+      - name: Build Floppy v2.0b A10 FAST
         working-directory: kernel
+        env:
+          WP: ${{ github.workspace }}
+          CLANG_TYPE: aosp
         run: |
           set -euxo pipefail
-          mkdir -p out diagnostics
+          : > ../chat_test
+          : > ../bot_token
 
-          make O=out ARCH=arm64 \
-            ginkgo-stock_defconfig \
-            vendor/xiaomi-trinket.config \
-            vendor/ginkgo.config \
-            ksu.config \
-            droidspaces.config \
-            2>&1 | tee diagnostics/configure.log
+          bash build/ckbuild.sh ginkgo kcR
 
-          scripts/config --file out/.config --disable SECURITY_SMACK
-          scripts/config --file out/.config --set-val LITTLE_CPU_MASK 15
-          scripts/config --file out/.config --set-val BIG_CPU_MASK 240
-          scripts/config --file out/.config --set-val BIG_CPU_FIRST_MASK 0
-          scripts/config --file out/.config --set-val BIG_CPU_SECOND_MASK 0
+          ZIP="$(find build -maxdepth 1 -type f -name 'Floppy_v2.0b-A10FAST-KSUNext-SUSFS-ginkgo-*.zip' | head -n1)"
+          test -n "$ZIP"
+          test -s "$ZIP"
 
-          scripts/config --file out/.config --enable SCHED_TUNE
-          scripts/config --file out/.config --disable SCHED_WALT
-          scripts/config --file out/.config --disable SCHED_TUNE_DUMMY
-          scripts/config --file out/.config --disable UCLAMP_TASK
-          scripts/config --file out/.config --disable UCLAMP_TASK_GROUP
-          scripts/config --file out/.config --disable UCLAMP_ASSIST
+          mkdir -p ../output
+          cp "$ZIP" ../output/Floppy_v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST.zip
+          cp out/.config ../output/kernel.config
+          cp log.txt ../output/build.log || true
 
-          scripts/config --file out/.config --enable HZ_100
-          scripts/config --file out/.config --disable HZ_250
-          scripts/config --file out/.config --disable HZ_300
-          scripts/config --file out/.config --disable HZ_1000
-          scripts/config --file out/.config --set-val HZ 100
-
-          scripts/config --file out/.config --enable BPF_JIT
-          scripts/config --file out/.config --enable BPF_JIT_ALWAYS_ON
-          scripts/config --file out/.config --enable BPF_JIT_DEFAULT_ON
-
-          scripts/config --file out/.config --enable OVERLAY_FS
-          scripts/config --file out/.config --enable KSU
-          scripts/config --file out/.config --enable KSU_NEXT
-          scripts/config --file out/.config --enable KSU_SUSFS
-          scripts/config --file out/.config --disable KSU_SUSFS_ENABLE_LOG
-
-          scripts/config --file out/.config --set-val LOCALVERSION '"-Floppy-v2.0b-KN-SUSFS-A10FAST"'
-          scripts/config --file out/.config --disable LOCALVERSION_AUTO
-
-          make O=out ARCH=arm64 olddefconfig 2>&1 | tee diagnostics/olddefconfig.log
-
-          grep -q '^CONFIG_SCHED_TUNE=y$' out/.config
-          grep -q '^# CONFIG_SCHED_WALT is not set$' out/.config
-          grep -q '^# CONFIG_UCLAMP_TASK is not set$' out/.config
-          grep -q '^CONFIG_HZ=100$' out/.config
-          grep -q '^CONFIG_BPF_JIT=y$' out/.config
-          grep -q '^CONFIG_BPF_JIT_ALWAYS_ON=y$' out/.config
-          grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
-          grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' out/.config
-          grep -q '^# CONFIG_SECURITY_SMACK is not set$' out/.config
-
-          cp out/.config diagnostics/kernel.config
-
-      - name: Compile Image.gz-dtb A10 FAST
-        working-directory: kernel
-        run: |
-          set -euxo pipefail
-
-          export PATH="$GITHUB_WORKSPACE/toolchains/aosp/bin:$GITHUB_WORKSPACE/toolchains/gcc64/bin:$GITHUB_WORKSPACE/toolchains/gcc32/bin:$PATH"
-          export LLVM=1
-          export LLVM_IAS=1
-          export ARCH=arm64
-          export KBUILD_BUILD_USER=riwutz
-          export KBUILD_BUILD_HOST=github
-
-          make -j"$(nproc)" O=out \
-            CC=clang \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            READELF=llvm-readelf \
-            OBJSIZE=llvm-size \
-            OBJDUMP=llvm-objdump \
-            OBJCOPY=llvm-objcopy \
-            STRIP=llvm-strip \
-            NM=llvm-nm \
-            AR=llvm-ar \
-            HOSTAR=llvm-ar \
-            HOSTAS=llvm-as \
-            HOSTNM=llvm-nm \
-            LD=ld.lld \
-            Image.gz-dtb 2>&1 | tee diagnostics/build.log
-
-          test -s out/arch/arm64/boot/Image.gz-dtb
-          cp out/arch/arm64/boot/Image.gz-dtb diagnostics/Image.gz-dtb
-          sha256sum diagnostics/Image.gz-dtb | tee diagnostics/Image.gz-dtb.sha256
+          sha256sum ../output/Floppy_v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST.zip \
+            | tee ../output/SHA256SUMS.txt
 
           {
-            echo "Source: Floppy v2.0b commit c318f003c0bd9f9ef7b6bf4b1f06974c57b4cd32"
-            echo "Target: Redmi Note 8/8T ginkgo Android 10"
-            echo "Scheduler: SCHED_TUNE legacy"
-            echo "SCHED_WALT: OFF"
-            echo "UCLAMP: OFF"
+            echo "Source: FloppyKernel v2.0b"
+            echo "Source commit: c318f003c0bd9f9ef7b6bf4b1f06974c57b4cd32"
+            echo "Device: Redmi Note 8/8T ginkgo"
+            echo "Target: Android 10"
+            echo "Scheduler: legacy SCHED_TUNE"
+            echo "SCHED_WALT: disabled"
+            echo "UCLAMP: disabled"
             echo "HZ: 100"
-            echo "BPF JIT: ON"
-            echo "KernelSU Next + SUSFS: ON"
-            echo "SUSFS logging: OFF"
-            echo "Packaging strategy: reuse known-working v2.0b DTB/DTBO/AnyKernel package"
-          } > diagnostics/BUILD-INFO.txt
+            echo "BPF JIT: enabled"
+            echo "KernelSU Next + SUSFS: enabled"
+            echo "SUSFS logging: disabled"
+            echo "DT overlay: enabled"
+          } > ../output/BUILD-INFO.txt
 
-      - name: Upload compiled A10 FAST image
+      - name: Verify final ZIP and kernel config
+        run: |
+          set -euxo pipefail
+
+          unzip -t output/Floppy_v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST.zip
+          unzip -p output/Floppy_v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST.zip anykernel.sh \
+            | grep -q 'device.name1=ginkgo'
+
+          test -s output/kernel.config
+          grep -q '^CONFIG_SCHED_TUNE=y$' output/kernel.config
+          grep -q '^CONFIG_HZ=100$' output/kernel.config
+          grep -q '^CONFIG_BPF_JIT=y$' output/kernel.config
+          grep -q '^CONFIG_BPF_JIT_ALWAYS_ON=y$' output/kernel.config
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y$' output/kernel.config
+          grep -q '^CONFIG_KSU=y$' output/kernel.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' output/kernel.config
+          grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' output/kernel.config
+
+          if grep -q '^CONFIG_SCHED_WALT=y$' output/kernel.config; then
+            echo "ERROR: SCHED_WALT unexpectedly enabled"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_UCLAMP_TASK=y$' output/kernel.config; then
+            echo "ERROR: UCLAMP unexpectedly enabled"
+            exit 1
+          fi
+
+      - name: Upload final A10 FAST kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Floppy-v2.0b-ginkgo-A10-FAST-Image
-          path: kernel/diagnostics/*
+          name: Floppy-v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST
+          path: output/*
           if-no-files-found: error
           retention-days: 30

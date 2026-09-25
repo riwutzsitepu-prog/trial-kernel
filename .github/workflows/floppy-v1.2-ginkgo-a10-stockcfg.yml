@@ -88,6 +88,10 @@ jobs:
           scripts/config --file out/.config --enable OVERLAY_FS
           scripts/config --file out/.config --disable OVERLAY_FS_REDIRECT_DIR
           scripts/config --file out/.config --disable OVERLAY_FS_INDEX
+          scripts/config --file out/.config --set-val LITTLE_CPU_MASK 15
+          scripts/config --file out/.config --set-val BIG_CPU_MASK 240
+          scripts/config --file out/.config --set-val BIG_CPU_FIRST_MASK 0
+          scripts/config --file out/.config --set-val BIG_CPU_SECOND_MASK 0
 
           timeout 5m scripts/kconfig/merge_config.sh -m -O out \
             out/.config \
@@ -106,6 +110,8 @@ jobs:
           grep -q '^CONFIG_RT_GROUP_SCHED=y$' out/.config
           grep -q '^CONFIG_HZ=100$' out/.config
           grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
+          grep -q '^CONFIG_LITTLE_CPU_MASK=15$' out/.config
+          grep -q '^CONFIG_BIG_CPU_MASK=240$' out/.config
           grep -q '^CONFIG_KSU=y$' out/.config
           ! grep -q '^CONFIG_UCLAMP_TASK=y$' out/.config
 

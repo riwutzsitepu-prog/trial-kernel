@@ -53,6 +53,9 @@ jobs:
 
           grep -n '#include <asm/setup.h>' fs/proc/cmdline.c
           sed -n '1581,1612p' kernel/bpf/core.c
+          sed -i 's/static inline bool is_battery_saver_on()/static inline bool is_battery_saver_on(void)/' include/linux/battery_saver.h
+          grep -n 'is_battery_saver_on' include/linux/battery_saver.h
+
 
       - name: Validate Android 10 stock base
         working-directory: kernel

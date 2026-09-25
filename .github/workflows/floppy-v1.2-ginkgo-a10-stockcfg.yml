@@ -59,8 +59,9 @@ jobs:
           mkdir -p toolchains/aosp toolchains/gcc64 toolchains/gcc32
 
           wget -q --show-progress \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/45c62a3905d1698c6c639486b0033b60b889d109/clang-r563880.tar.gz \
+            https://github.com/zzh20188/ZTC-Kernel-Build/releases/download/clang/clang-r563880.tar.gz \
             -O /tmp/clang-r563880.tar.gz
+          echo "cf64c238acce155ab75ffe00e9b9a6d4007b3ffd0d31598e3275e40df6830743  /tmp/clang-r563880.tar.gz" | sha256sum -c -
           tar -xf /tmp/clang-r563880.tar.gz -C toolchains/aosp
           rm -f /tmp/clang-r563880.tar.gz
 

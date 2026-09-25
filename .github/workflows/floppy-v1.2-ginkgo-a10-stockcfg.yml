@@ -40,6 +40,26 @@ jobs:
           test -f arch/arm64/configs/vendor/ginkgo.config
           test -f arch/arm64/configs/ksu.config
 
+      - name: Patch A10 cmdline header compatibility
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("fs/proc/cmdline.c")
+          s = p.read_text()
+          old = """#ifdef CONFIG_INITRAMFS_IGNORE_SKIP_FLAG
+#include <asm/setup.h>
+#endif
+"""
+          if old not in s:
+              raise SystemExit("expected conditional asm/setup.h block not found")
+          s = s.replace(old, "#include <asm/setup.h>\n", 1)
+          p.write_text(s)
+          PY
+          grep -n '#include <asm/setup.h>' fs/proc/cmdline.c
+
       - name: Validate Android 10 stock base
         working-directory: kernel
         run: |

@@ -56,6 +56,15 @@ jobs:
           sed -i 's/static inline bool is_battery_saver_on()/static inline bool is_battery_saver_on(void)/' include/linux/battery_saver.h
           grep -n 'is_battery_saver_on' include/linux/battery_saver.h
 
+          # Preserve the stock A10 TCP default when Floppy's modified Kconfig leaves the string unset.
+          python3 -c 'from pathlib import Path; p=Path("net/ipv4/tcp_cong.c"); s=p.read_text(); m="/* Set default value from kernel configuration at bootup */"; assert m in s; p.write_text(s.replace(m, "#ifndef CONFIG_DEFAULT_TCP_CONG\n#define CONFIG_DEFAULT_TCP_CONG \"cubic\"\n#endif\n\n"+m, 1))'
+
+          # Camera debug trace call-sites pass pointers; make trace prototypes match.
+          python3 -c 'from pathlib import Path; p=Path("include/trace/events/msm_cam.h"); s=p.read_text(); s=s.replace("TP_PROTO(struct msm_vfe_irq_debug_info tasklet_state)", "TP_PROTO(struct msm_vfe_irq_debug_info *tasklet_state)", 1).replace("tasklet_state.", "tasklet_state->"); s=s.replace("TP_PROTO(struct msm_vfe_irq_debug_info ping_pong_state)", "TP_PROTO(struct msm_vfe_irq_debug_info *ping_pong_state)", 1).replace("ping_pong_state.", "ping_pong_state->"); p.write_text(s)'
+
+          grep -n 'CONFIG_DEFAULT_TCP_CONG' net/ipv4/tcp_cong.c | tail -n 4
+          grep -n 'TP_PROTO(struct msm_vfe_irq_debug_info \*' include/trace/events/msm_cam.h
+
 
       - name: Validate Android 10 stock base
         working-directory: kernel

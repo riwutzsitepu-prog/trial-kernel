@@ -65,6 +65,10 @@ jobs:
           grep -n 'CONFIG_DEFAULT_TCP_CONG' net/ipv4/tcp_cong.c | tail -n 4
           grep -n 'TP_PROTO(struct msm_vfe_irq_debug_info \*' include/trace/events/msm_cam.h
 
+          # Match the two camera trace call-sites to the pointer prototypes.
+          python3 -c 'from pathlib import Path; p=Path("drivers/media/platform/msm/camera_v2/isp/msm_isp_util.c"); s=p.read_text(); a="trace_msm_cam_ping_pong_debug_dump(\n\t\t\tvfe_dev"; b="trace_msm_cam_ping_pong_debug_dump(\n\t\t\t&vfe_dev"; assert a in s, "ping-pong call pattern not found"; s=s.replace(a,b,1); a="trace_msm_cam_tasklet_debug_dump(\n\t\t\tvfe_dev"; b="trace_msm_cam_tasklet_debug_dump(\n\t\t\t&vfe_dev"; assert a in s, "tasklet call pattern not found"; p.write_text(s.replace(a,b,1))'
+          sed -n '2607,2636p' drivers/media/platform/msm/camera_v2/isp/msm_isp_util.c
+
 
       - name: Validate Android 10 stock base
         working-directory: kernel

@@ -68,6 +68,7 @@ jobs:
           CONFIG_BPF_JIT=y
           CONFIG_BPF_JIT_ALWAYS_ON=y
           CONFIG_BPF_JIT_DEFAULT_ON=y
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
           EOF
 
           # Keep KernelSU Next + SUSFS, but disable SUSFS debug logging.
@@ -180,8 +181,42 @@ jobs:
           grep -q '^CONFIG_SCHED_TUNE=y$' output/kernel.config
           grep -q '^CONFIG_HZ=100$' output/kernel.config
           ! grep -q '^CONFIG_SCHED_WALT=y$' output/kernel.config
-          ! grep -q '^CONFIG_UCLAMP_TASK=y$' output/kernel.config
-          grep -q '^CONFIG_KSU=y$' output/kernel.config
+          ! grep -q '^CONFIG_UCLAMP_TASK=y
+          grep -q '^CONFIG_KSU_SUSFS=y$' output/kernel.config
+          grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' output/kernel.config
+
+      - name: Upload final A10 FAST kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Floppy-v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST
+          path: output/*
+          if-no-files-found: error
+          retention-days: 30
+ output/kernel.config
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          grep -q '^CONFIG_KSU_SUSFS=y$' output/kernel.config
+          grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' output/kernel.config
+
+      - name: Upload final A10 FAST kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Floppy-v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST
+          path: output/*
+          if-no-files-found: error
+          retention-days: 30
+ output/kernel.config
+          grep -q '^CONFIG_KSU=y
+          grep -q '^CONFIG_KSU_SUSFS=y$' output/kernel.config
+          grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' output/kernel.config
+
+      - name: Upload final A10 FAST kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Floppy-v2.0b-KSUNext-SUSFS-ginkgo-A10-FAST
+          path: output/*
+          if-no-files-found: error
+          retention-days: 30
+ output/kernel.config
           grep -q '^CONFIG_KSU_SUSFS=y$' output/kernel.config
           grep -q '^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' output/kernel.config
 

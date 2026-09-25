@@ -123,6 +123,7 @@ jobs:
           scripts/config --file out/.config --set-val BIG_CPU_MASK 240
           scripts/config --file out/.config --set-val BIG_CPU_FIRST_MASK 0
           scripts/config --file out/.config --set-val BIG_CPU_SECOND_MASK 0
+          scripts/config --file out/.config --disable SECURITY_SMACK
 
           timeout 5m scripts/kconfig/merge_config.sh -m -O out \
             out/.config \
@@ -143,6 +144,7 @@ jobs:
           grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
           grep -q '^CONFIG_LITTLE_CPU_MASK=15$' out/.config
           grep -q '^CONFIG_BIG_CPU_MASK=240$' out/.config
+          grep -q '^# CONFIG_SECURITY_SMACK is not set$' out/.config
           grep -q '^CONFIG_KSU=y$' out/.config
           grep -q '^# CONFIG_SECURITY_SMACK is not set$' out/.config
           ! grep -q '^CONFIG_UCLAMP_TASK=y$' out/.config

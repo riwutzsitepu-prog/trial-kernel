@@ -1,6 +1,10 @@
 name: Floppy v2.0b Ginkgo A10 FAST
 
 on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/floppy-v2-a10-fastboot.yml'
   push:
     branches:
       - floppy-v2-a10-fastboot
